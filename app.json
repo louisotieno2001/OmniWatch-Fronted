@@ -4,7 +4,7 @@
     "slug": "OmniWatcher",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/images/icon.png",
+    "icon": "./assets/images/logo.png",
     "scheme": "omniwatcher",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
@@ -14,28 +14,28 @@
     "android": {
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
-        "foregroundImage": "./assets/images/android-icon-foreground.png",
-        "backgroundImage": "./assets/images/android-icon-background.png",
-        "monochromeImage": "./assets/images/android-icon-monochrome.png"
+        "foregroundImage": "./assets/images/android-chrome-192x192.png",
+        "backgroundImage": "./assets/images/android-chrome-192x192.png",
+        "monochromeImage": "./assets/images/android-chrome-192x192.png"
       },
       "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false
     },
     "web": {
       "output": "static",
-      "favicon": "./assets/images/favicon.png"
+      "favicon": "./assets/images/favicon-32x32.png"
     },
     "plugins": [
       "expo-router",
       [
         "expo-splash-screen",
         {
-          "image": "./assets/images/splash-icon.png",
+          "image": "./assets/images/logo.png",
           "imageWidth": 200,
           "resizeMode": "contain",
-          "backgroundColor": "#ffffff",
+          "backgroundColor": "#0f172a",
           "dark": {
-            "backgroundColor": "#000000"
+            "backgroundColor": "#0f172a"
           }
         }
       ]
@@ -43,6 +43,13 @@
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "75e426ae-f166-4810-9abf-4b668bffbe3d"
+      },
+      "apiUrl": "http://10.130.145.109:5000/api"
     }
   }
 }
