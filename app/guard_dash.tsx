@@ -1,5 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
+import * as ImagePicker from 'expo-image-picker';
 import React, { useState, useEffect, useRef } from 'react';
 import {
   SafeAreaView,
@@ -12,6 +13,7 @@ import {
   Alert,
   Modal,
   ActivityIndicator,
+  Image,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Location from 'expo-location';
@@ -67,13 +69,38 @@ interface PatrolData {
   id: string;
   start_time: string;
   end_time?: string;
+  duration?: number;
   user_id: string;
   organization_id?: string;
-  location_data?: string;
+  map?: string;
   status: 'active' | 'completed';
   date_created: string;
   date_updated: string;
 }
+
+// Map update interval in milliseconds (30 seconds)
+const MAP_UPDATE_INTERVAL = 30000;
+
+// Log entry interface
+interface LogEntry {
+  id: string;
+  title: string;
+  description: string;
+  category: 'activity' | 'unusual' | 'incident' | 'checkpoint' | 'other';
+  images: string | null;
+  timestamp: string;
+  user_id: string;
+  patrol_id: string | null;
+}
+
+// Log categories
+const LOG_CATEGORIES = [
+  { value: 'activity', label: 'Activity', icon: 'walk', color: '#2563eb' },
+  { value: 'unusual', label: 'Unusual', icon: 'warning', color: '#f59e0b' },
+  { value: 'incident', label: 'Incident', icon: 'alert-circle', color: '#ef4444' },
+  { value: 'checkpoint', label: 'Checkpoint', icon: 'location', color: '#22c55e' },
+  { value: 'other', label: 'Other', icon: 'ellipsis-horizontal', color: '#64748b' },
+];
 
 // Time slots for operating hours
 const TIME_SLOTS = [
@@ -85,7 +112,7 @@ const TIME_SLOTS = [
 
 export default function GuardDashboard() {
 const router = useRouter();
-const [activeTab, setActiveTab] = useState<'patrol' | 'details' | 'settings'>('patrol');
+const [activeTab, setActiveTab] = useState<'patrol' | 'logs' | 'details' | 'settings'>('patrol');
 
   // State for locations and available areas
   const [locations, setLocations] = useState<LocationData[]>([]);
@@ -105,6 +132,20 @@ const [activeTab, setActiveTab] = useState<'patrol' | 'details' | 'settings'>('p
   // Patrol History State
   const [patrolHistory, setPatrolHistory] = useState<PatrolData[]>([]);
   const [isLoadingPatrols, setIsLoadingPatrols] = useState(false);
+
+  // Logs State
+  const [logs, setLogs] = useState<LogEntry[]>([]);
+  const [isLoadingLogs, setIsLoadingLogs] = useState(false);
+  const [createLogModalVisible, setCreateLogModalVisible] = useState(false);
+  const [newLogTitle, setNewLogTitle] = useState('');
+  const [newLogDescription, setNewLogDescription] = useState('');
+  const [newLogCategory, setNewLogCategory] = useState<'activity' | 'unusual' | 'incident' | 'checkpoint' | 'other'>('activity');
+  const [isSubmittingLog, setIsSubmittingLog] = useState(false);
+  const [selectedImages, setSelectedImages] = useState<string[]>([]);
+  
+  // Log image viewing state
+  const [selectedLogImage, setSelectedLogImage] = useState<string | null>(null);
+  const [logImageModalVisible, setLogImageModalVisible] = useState(false);
 
   // Persistent Patrol State
   const [patrolId, setPatrolId] = useState<string | null>(null);
@@ -134,6 +175,36 @@ const [activeTab, setActiveTab] = useState<'patrol' | 'details' | 'settings'>('p
   const [endTimeModalVisible, setEndTimeModalVisible] = useState(false);
   const [locationModalVisible, setLocationModalVisible] = useState(false);
   const [logoutModalVisible, setLogoutModalVisible] = useState(false);
+
+  // Dark Mode State
+  const [isDarkMode, setIsDarkMode] = useState(true);
+
+  // Toggle dark mode
+  const toggleDarkMode = async () => {
+    const newMode = !isDarkMode;
+    setIsDarkMode(newMode);
+    // Save preference to AsyncStorage
+    try {
+      await AsyncStorage.setItem('darkMode', JSON.stringify(newMode));
+    } catch (error) {
+      console.error('Error saving dark mode preference:', error);
+    }
+  };
+
+  // Load dark mode preference on mount
+  useEffect(() => {
+    const loadDarkModePreference = async () => {
+      try {
+        const savedMode = await AsyncStorage.getItem('darkMode');
+        if (savedMode !== null) {
+          setIsDarkMode(JSON.parse(savedMode));
+        }
+      } catch (error) {
+        console.error('Error loading dark mode preference:', error);
+      }
+    };
+    loadDarkModePreference();
+  }, []);
 
   // Load user session on mount
   useEffect(() => {
@@ -237,6 +308,9 @@ const [activeTab, setActiveTab] = useState<'patrol' | 'details' | 'settings'>('p
       
       // Fetch patrol history
       await fetchPatrolHistory();
+      
+      // Fetch logs
+      await fetchLogs();
     } catch (error) {
       console.error('Error loading session:', error);
       Alert.alert('Error', 'Failed to load user data. Please login again.');
@@ -384,6 +458,171 @@ const [activeTab, setActiveTab] = useState<'patrol' | 'details' | 'settings'>('p
     }
   };
 
+  // Fetch logs from API
+  const fetchLogs = async () => {
+    try {
+      setIsLoadingLogs(true);
+      const { token } = await getUserSession();
+      
+      if (!token) {
+        return;
+      }
+
+      const response = await fetch(`${API_URL}/logs?limit=50&sort=-timestamp`, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        setLogs(data.logs || []);
+      } else {
+        console.error('Failed to fetch logs:', response.status);
+      }
+    } catch (error) {
+      console.error('Error fetching logs:', error);
+    } finally {
+      setIsLoadingLogs(false);
+    }
+  };
+
+  // Create a new log entry
+  const createLog = async () => {
+    if (!newLogTitle.trim() || !newLogDescription.trim()) {
+      Alert.alert('Error', 'Please enter a title and description');
+      return;
+    }
+
+    try {
+      setIsSubmittingLog(true);
+      const { token } = await getUserSession();
+      
+      if (!token) {
+        Alert.alert('Error', 'Session not found. Please login again.');
+        return;
+      }
+
+      const response = await fetch(`${API_URL}/logs`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          title: newLogTitle.trim(),
+          description: newLogDescription.trim(),
+          category: newLogCategory,
+          patrol_id: patrolId,
+          images: selectedImages.length > 0 ? JSON.stringify(selectedImages) : null,
+        }),
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        Alert.alert('Success', 'Log created successfully');
+        
+        // Reset form
+        resetLogForm();
+        
+        // Refresh logs
+        await fetchLogs();
+      } else {
+        const errorData = await response.json();
+        Alert.alert('Error', errorData.message || 'Failed to create log');
+      }
+    } catch (error) {
+      console.error('Error creating log:', error);
+      Alert.alert('Error', 'Failed to create log. Please try again.');
+    } finally {
+      setIsSubmittingLog(false);
+    }
+  };
+
+  // Get category info helper
+  const getCategoryInfo = (category: string) => {
+    return LOG_CATEGORIES.find(c => c.value === category) || LOG_CATEGORIES[4];
+  };
+
+  // Pick image from gallery
+  const pickImage = async () => {
+    try {
+      const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (status !== 'granted') {
+        Alert.alert('Permission Required', 'Please grant camera roll permissions to add images.');
+        return;
+      }
+
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        allowsEditing: true,
+        aspect: [4, 3],
+        quality: 0.8,
+        base64: true,
+      });
+
+      if (!result.canceled && result.assets[0]) {
+        const image = result.assets[0];
+        // Use base64 if available, otherwise use the URI
+        if (image.base64) {
+          setSelectedImages(prev => [...prev, `data:image/jpeg;base64,${image.base64}`]);
+        } else {
+          // For local URIs, we'll need to handle differently
+          Alert.alert('Info', 'Image selected. Note: For best results, please use base64 images.');
+        }
+      }
+    } catch (error) {
+      console.error('Error picking image:', error);
+      Alert.alert('Error', 'Failed to pick image. Please try again.');
+    }
+  };
+
+  // Take photo with camera
+  const takePhoto = async () => {
+    try {
+      const { status } = await ImagePicker.requestCameraPermissionsAsync();
+      if (status !== 'granted') {
+        Alert.alert('Permission Required', 'Please grant camera permissions to take photos.');
+        return;
+      }
+
+      const result = await ImagePicker.launchCameraAsync({
+        allowsEditing: true,
+        aspect: [4, 3],
+        quality: 0.8,
+        base64: true,
+      });
+
+      if (!result.canceled && result.assets[0]) {
+        const image = result.assets[0];
+        if (image.base64) {
+          setSelectedImages(prev => [...prev, `data:image/jpeg;base64,${image.base64}`]);
+        } else {
+          Alert.alert('Info', 'Photo taken. Note: For best results, please use base64 images.');
+        }
+      }
+    } catch (error) {
+      console.error('Error taking photo:', error);
+      Alert.alert('Error', 'Failed to take photo. Please try again.');
+    }
+  };
+
+  // Remove selected image
+  const removeImage = (index: number) => {
+    setSelectedImages(prev => prev.filter((_, i) => i !== index));
+  };
+
+  // Reset log form
+  const resetLogForm = () => {
+    setNewLogTitle('');
+    setNewLogDescription('');
+    setNewLogCategory('activity');
+    setSelectedImages([]);
+    setCreateLogModalVisible(false);
+  };
+
   // Start location tracking
   const startLocationTracking = async () => {
     try {
@@ -421,6 +660,67 @@ const [activeTab, setActiveTab] = useState<'patrol' | 'details' | 'settings'>('p
       locationSubscription.current = null;
     }
   };
+
+  // Send periodic location update to server
+  const sendPeriodicLocationUpdate = async () => {
+    if (!patrolId || locationData.length === 0) {
+      return;
+    }
+
+    try {
+      const { token } = await getUserSession();
+      if (!token) {
+        console.error('No auth token found for location update');
+        return;
+      }
+
+      // Get the last few location points (since last update)
+      // We'll send all points since the patrol started, server will append
+      const locationPoints = locationData.map((point) => ({
+        latitude: point.latitude,
+        longitude: point.longitude,
+        timestamp: point.timestamp,
+      }));
+
+      const response = await fetch(`${API_URL}/patrols/${patrolId}/location`, {
+        method: 'PATCH',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          location_data: locationPoints,
+        }),
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        console.log('Location update sent successfully, total points:', data.points_count);
+      } else {
+        console.error('Failed to send location update:', response.status);
+      }
+    } catch (error) {
+      console.error('Error sending periodic location update:', error);
+    }
+  };
+
+  // Periodic location update effect
+  useEffect(() => {
+    let interval: ReturnType<typeof setInterval>;
+
+    if (isRecording && patrolId) {
+      // Set up interval to send location updates every 30 seconds
+      interval = setInterval(() => {
+        sendPeriodicLocationUpdate();
+      }, MAP_UPDATE_INTERVAL);
+    }
+
+    return () => {
+      if (interval) {
+        clearInterval(interval);
+      }
+    };
+  }, [isRecording, patrolId, locationData]);
 
   // Handle logout - show custom modal instead of Alert
   const handleLogout = () => {
@@ -498,19 +798,44 @@ const [activeTab, setActiveTab] = useState<'patrol' | 'details' | 'settings'>('p
                 // Update patrol record in Directus
                 if (patrolId) {
                   const { token } = await getUserSession();
+                  if (!token) {
+                    throw new Error('No auth token found while ending patrol');
+                  }
                   const endTime = new Date().toISOString();
+                  const mapCoordinates = locationData.map((point) => ({
+                    latitude: point.latitude,
+                    longitude: point.longitude,
+                    timestamp: point.timestamp,
+                  }));
+                  const mapJson = JSON.stringify(mapCoordinates);
 
-                  await fetch(`${API_URL}/patrols/${patrolId}`, {
+                  const patchResponse = await fetch(`${API_URL}/patrols/${patrolId}`, {
                     method: 'PATCH',
                     headers: {
                       'Authorization': `Bearer ${token}`,
                       'Content-Type': 'application/json',
                     },
                     body: JSON.stringify({
+                      organization_id: userData?.invite_code || null,
+                      user_id: userData?.id || null,
+                      duration: recordingTime,
+                      start_time: startTime?.toISOString() || null,
                       end_time: endTime,
-                      location_data: JSON.stringify(locationData),
+                      map: mapJson,
                     }),
                   });
+                  if (!patchResponse.ok) {
+                    const errText = await patchResponse.text();
+                    throw new Error(`Failed to end patrol (${patchResponse.status}): ${errText}`);
+                  }
+                  const patchData = await patchResponse.json();
+                  if (patchData?.warning === 'duration_not_saved') {
+                    console.warn('Duration was not persisted:', patchData?.details);
+                    Alert.alert(
+                      'Patrol Saved With Warning',
+                      'Patrol end time/map saved, but duration could not be persisted. Check backend field configuration for duration.'
+                    );
+                  }
 
                   // Clear persistent patrol data
                   await AsyncStorage.removeItem('ongoingPatrol');
@@ -545,7 +870,7 @@ const [activeTab, setActiveTab] = useState<'patrol' | 'details' | 'settings'>('p
           return;
         }
 
-        const orgId = storedUserData.assignments?.[0]?.location_id?.id || 'default';
+        const orgId = storedUserData.invite_code || null;
         const now = new Date().toISOString();
 
         // Create patrol record in Directus
@@ -963,27 +1288,133 @@ const [activeTab, setActiveTab] = useState<'patrol' | 'details' | 'settings'>('p
     </ScrollView>
   );
 
+  // Render Logs Tab
+  const renderLogsTab = () => (
+    <ScrollView style={styles.tabContent}>
+      {/* Stats */}
+      <View style={styles.logsStatsContainer}>
+        <View style={styles.logsStatCard}>
+          <Ionicons name="document-text" size={24} color="#2563eb" />
+          <Text style={styles.logsStatNumber}>{logs.length}</Text>
+          <Text style={styles.logsStatLabel}>Total Logs</Text>
+        </View>
+        <View style={styles.logsStatCard}>
+          <Ionicons name="warning" size={24} color="#f59e0b" />
+          <Text style={styles.logsStatNumber}>
+            {logs.filter(l => l.category === 'unusual' || l.category === 'incident').length}
+          </Text>
+          <Text style={styles.logsStatLabel}>Unusual/Incident</Text>
+        </View>
+      </View>
+
+      {/* Logs List */}
+      <Text style={styles.sectionTitle}>Recent Logs</Text>
+      {isLoadingLogs ? (
+        <View style={styles.historyLoadingContainer}>
+          <ActivityIndicator size="small" color="#2563eb" />
+          <Text style={styles.historyLoadingText}>Loading logs...</Text>
+        </View>
+      ) : logs.length > 0 ? (
+        <View style={styles.logsContainer}>
+          {logs.map((log) => {
+            const categoryInfo = getCategoryInfo(log.category);
+            const logDate = log.timestamp 
+              ? new Date(log.timestamp).toLocaleDateString('en-US', { 
+                  month: 'short', 
+                  day: 'numeric',
+                  hour: '2-digit',
+                  minute: '2-digit'
+                })
+              : 'Unknown';
+
+            return (
+              <View key={log.id} style={styles.logsCard}>
+                <View style={styles.logsHeader}>
+                  <View style={[styles.logsIcon, { backgroundColor: categoryInfo.color + '20' }]}>
+                    <Ionicons name={categoryInfo.icon as any} size={20} color={categoryInfo.color} />
+                  </View>
+                  <View style={styles.logsInfo}>
+                    <Text style={styles.logsTitle}>{log.title}</Text>
+                    <Text style={styles.logsDate}>{logDate}</Text>
+                  </View>
+                  <View style={[styles.logsCategoryBadge, { backgroundColor: categoryInfo.color + '20' }]}>
+                    <Text style={[styles.logsCategoryText, { color: categoryInfo.color }]}>
+                      {categoryInfo.label}
+                    </Text>
+                  </View>
+                </View>
+                <Text style={styles.logsDescription} numberOfLines={2}>
+                  {log.description}
+                </Text>
+                {log.images && (
+                  <View style={styles.logsImagesContainer}>
+                    {(() => {
+                      try {
+                        const images = JSON.parse(log.images);
+                        if (Array.isArray(images) && images.length > 0) {
+                          return (
+                            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.logsImagesScroll}>
+                              {images.map((imgUri: string, index: number) => (
+                                <TouchableOpacity 
+                                  key={index}
+                                  onPress={() => {
+                                    // Set selected image for viewing
+                                    setSelectedLogImage(imgUri);
+                                    setLogImageModalVisible(true);
+                                  }}
+                                >
+                                  <Image
+                                    source={{ uri: imgUri }}
+                                    style={styles.logsImageThumbnail}
+                                  />
+                                </TouchableOpacity>
+                              ))}
+                            </ScrollView>
+                          );
+                        }
+                      } catch (e) {
+                        console.error('Error parsing images:', e);
+                      }
+                      return null;
+                    })()}
+                  </View>
+                )}
+              </View>
+            );
+          })}
+        </View>
+      ) : (
+        <View style={styles.historyEmptyContainer}>
+          <Ionicons name="document-text-outline" size={40} color="#64748b" />
+          <Text style={styles.historyEmptyText}>No logs recorded yet</Text>
+          <Text style={styles.historyEmptySubtext}>Tap + to add your first log</Text>
+        </View>
+      )}
+
+      {/* Floating Action Button for adding logs */}
+      <TouchableOpacity 
+        style={styles.fab}
+        onPress={() => setCreateLogModalVisible(true)}
+      >
+        <Ionicons name="add" size={28} color="#fff" />
+      </TouchableOpacity>
+    </ScrollView>
+  );
+
   // Render Settings Tab
   const renderSettingsTab = () => (
     <ScrollView style={styles.tabContent}>
       {/* Account Settings */}
       <Text style={styles.sectionTitle}>Account Settings</Text>
       <View style={styles.card}>
-        <TouchableOpacity style={styles.settingRow}>
+        <TouchableOpacity style={styles.settingRow} onPress={() => setActiveTab('details')}>
           <View style={styles.settingLeft}>
             <Ionicons name="person" size={20} color="#2563eb" />
             <Text style={styles.settingText}>Profile Information</Text>
           </View>
           <Ionicons name="chevron-forward" size={20} color="#64748b" />
         </TouchableOpacity>
-        <TouchableOpacity style={styles.settingRow}>
-          <View style={styles.settingLeft}>
-            <Ionicons name="lock-closed" size={20} color="#2563eb" />
-            <Text style={styles.settingText}>Change Password</Text>
-          </View>
-          <Ionicons name="chevron-forward" size={20} color="#64748b" />
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.settingRow}>
+        <TouchableOpacity style={styles.settingRow} onPress={() => router.push('/settings')}>
           <View style={styles.settingLeft}>
             <Ionicons name="notifications" size={20} color="#2563eb" />
             <Text style={styles.settingText}>Notification Preferences</Text>
@@ -992,50 +1423,21 @@ const [activeTab, setActiveTab] = useState<'patrol' | 'details' | 'settings'>('p
         </TouchableOpacity>
       </View>
 
-      {/* Guard Settings */}
-      <Text style={styles.sectionTitle}>Guard Settings</Text>
-      <View style={styles.card}>
-        <TouchableOpacity style={styles.settingRow}>
-          <View style={styles.settingLeft}>
-            <Ionicons name="shield" size={20} color="#2563eb" />
-            <Text style={styles.settingText}>Security Settings</Text>
-          </View>
-          <Ionicons name="chevron-forward" size={20} color="#64748b" />
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.settingRow}>
-          <View style={styles.settingLeft}>
-            <Ionicons name="location" size={20} color="#2563eb" />
-            <Text style={styles.settingText}>Location Preferences</Text>
-          </View>
-          <Ionicons name="chevron-forward" size={20} color="#64748b" />
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.settingRow}>
-          <View style={styles.settingLeft}>
-            <Ionicons name="walk" size={20} color="#2563eb" />
-            <Text style={styles.settingText}>Patrol Preferences</Text>
-          </View>
-          <Ionicons name="chevron-forward" size={20} color="#64748b" />
-        </TouchableOpacity>
-      </View>
-
       {/* App Settings */}
       <Text style={styles.sectionTitle}>App Settings</Text>
       <View style={styles.card}>
-        <TouchableOpacity style={styles.settingRow}>
+        <TouchableOpacity style={styles.settingRow} onPress={toggleDarkMode}>
           <View style={styles.settingLeft}>
-            <Ionicons name="moon" size={20} color="#2563eb" />
+            <Ionicons name={isDarkMode ? 'moon' : 'sunny'} size={20} color="#2563eb" />
             <Text style={styles.settingText}>Dark Mode</Text>
           </View>
-          <Ionicons name="toggle" size={20} color="#64748b" />
+          <Ionicons 
+            name={isDarkMode ? 'toggle' : 'toggle-outline'} 
+            size={24} 
+            color={isDarkMode ? '#2563eb' : '#64748b'} 
+          />
         </TouchableOpacity>
-        <TouchableOpacity style={styles.settingRow}>
-          <View style={styles.settingLeft}>
-            <Ionicons name="language" size={20} color="#2563eb" />
-            <Text style={styles.settingText}>Language</Text>
-          </View>
-          <Ionicons name="chevron-forward" size={20} color="#64748b" />
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.settingRow}>
+        <TouchableOpacity style={styles.settingRow} onPress={() => router.push('/about')}>
           <View style={styles.settingLeft}>
             <Ionicons name="information-circle" size={20} color="#2563eb" />
             <Text style={styles.settingText}>About</Text>
@@ -1047,14 +1449,14 @@ const [activeTab, setActiveTab] = useState<'patrol' | 'details' | 'settings'>('p
       {/* Support */}
       <Text style={styles.sectionTitle}>Support</Text>
       <View style={styles.card}>
-        <TouchableOpacity style={styles.settingRow}>
+        <TouchableOpacity style={styles.settingRow} onPress={() => router.push('/support')}>
           <View style={styles.settingLeft}>
             <Ionicons name="help-circle" size={20} color="#2563eb" />
             <Text style={styles.settingText}>Help & Support</Text>
           </View>
           <Ionicons name="chevron-forward" size={20} color="#64748b" />
         </TouchableOpacity>
-        <TouchableOpacity style={styles.settingRow}>
+        <TouchableOpacity style={styles.settingRow} onPress={() => router.push('/support')}>
           <View style={styles.settingLeft}>
             <Ionicons name="chatbubble" size={20} color="#2563eb" />
             <Text style={styles.settingText}>Contact Support</Text>
@@ -1102,8 +1504,9 @@ const [activeTab, setActiveTab] = useState<'patrol' | 'details' | 'settings'>('p
 
       {/* Tab Content */}
       <View style={styles.content}>
-        {activeTab === 'patrol' ? renderPatrolTab() : 
-         activeTab === 'details' ? renderDetailsTab() : 
+        {activeTab === 'patrol' ? renderPatrolTab() :
+         activeTab === 'logs' ? renderLogsTab() :
+         activeTab === 'details' ? renderDetailsTab() :
          renderSettingsTab()}
       </View>
 
@@ -1120,6 +1523,20 @@ const [activeTab, setActiveTab] = useState<'patrol' | 'details' | 'settings'>('p
           />
           <Text style={[styles.bottomTabText, activeTab === 'patrol' && styles.bottomTabActive]}>
             Patrol
+          </Text>
+        </TouchableOpacity>
+        
+        <TouchableOpacity
+          style={styles.bottomTab}
+          onPress={() => setActiveTab('logs')}
+        >
+          <Ionicons 
+            name={activeTab === 'logs' ? 'document-text' : 'document-text-outline'} 
+            size={26} 
+            color={activeTab === 'logs' ? '#2563eb' : '#94a3b8'} 
+          />
+          <Text style={[styles.bottomTabText, activeTab === 'logs' && styles.bottomTabActive]}>
+            Logs
           </Text>
         </TouchableOpacity>
         
@@ -1339,6 +1756,166 @@ const [activeTab, setActiveTab] = useState<'patrol' | 'details' | 'settings'>('p
                 onPress={performLogout}
               >
                 <Text style={styles.modalSubmitText}>Logout</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Image Viewer Modal */}
+      <Modal
+        visible={logImageModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setLogImageModalVisible(false)}
+      >
+        <View style={styles.imageViewerOverlay}>
+          <TouchableOpacity 
+            style={styles.imageViewerCloseButton}
+            onPress={() => setLogImageModalVisible(false)}
+          >
+            <Ionicons name="close-circle" size={40} color="#fff" />
+          </TouchableOpacity>
+          {selectedLogImage && (
+            <Image
+              source={{ uri: selectedLogImage }}
+              style={styles.imageViewerImage}
+              resizeMode="contain"
+            />
+          )}
+        </View>
+      </Modal>
+
+      {/* Create Log Modal */}
+      <Modal
+        visible={createLogModalVisible}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setCreateLogModalVisible(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalContent, styles.createLogModalContent]}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Create Log Entry</Text>
+              <TouchableOpacity onPress={() => setCreateLogModalVisible(false)}>
+                <Ionicons name="close" size={24} color="#fff" />
+              </TouchableOpacity>
+            </View>
+            
+            <ScrollView style={styles.createLogScrollView}>
+              {/* Title Input */}
+              <Text style={styles.inputLabel}>Title</Text>
+              <TextInput
+                style={styles.logInput}
+                placeholder="Enter log title"
+                placeholderTextColor="#64748b"
+                value={newLogTitle}
+                onChangeText={setNewLogTitle}
+              />
+
+              {/* Description Input */}
+              <Text style={styles.inputLabel}>Description</Text>
+              <TextInput
+                style={[styles.logInput, styles.logTextArea]}
+                placeholder="Describe the activity or incident..."
+                placeholderTextColor="#64748b"
+                multiline
+                numberOfLines={4}
+                textAlignVertical="top"
+                value={newLogDescription}
+                onChangeText={setNewLogDescription}
+              />
+
+              {/* Category Selection */}
+              <Text style={styles.inputLabel}>Category</Text>
+              <View style={styles.categoryGrid}>
+                {LOG_CATEGORIES.map((category) => (
+                  <TouchableOpacity
+                    key={category.value}
+                    style={[
+                      styles.categoryButton,
+                      newLogCategory === category.value && { backgroundColor: category.color },
+                    ]}
+                    onPress={() => setNewLogCategory(category.value as any)}
+                  >
+                    <Ionicons 
+                      name={category.icon as any} 
+                      size={20} 
+                      color={newLogCategory === category.value ? '#fff' : category.color} 
+                    />
+                    <Text style={[
+                      styles.categoryButtonText,
+                      newLogCategory === category.value && styles.categoryButtonTextSelected,
+                    ]}>
+                      {category.label}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+
+              {/* Image Attachment Section */}
+              <Text style={styles.inputLabel}>Attachments (Optional)</Text>
+              <View style={styles.imageButtonsContainer}>
+                <TouchableOpacity 
+                  style={styles.imagePickerButton}
+                  onPress={takePhoto}
+                >
+                  <Ionicons name="camera" size={24} color="#2563eb" />
+                  <Text style={styles.imagePickerText}>Take Photo</Text>
+                </TouchableOpacity>
+                <TouchableOpacity 
+                  style={styles.imagePickerButton}
+                  onPress={pickImage}
+                >
+                  <Ionicons name="images" size={24} color="#2563eb" />
+                  <Text style={styles.imagePickerText}>Choose Image</Text>
+                </TouchableOpacity>
+              </View>
+
+              {/* Selected Images Preview */}
+              {selectedImages.length > 0 && (
+                <View style={styles.selectedImagesContainer}>
+                  <Text style={styles.selectedImagesLabel}>
+                    {selectedImages.length} image(s) selected
+                  </Text>
+                  <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+                    {selectedImages.map((uri, index) => (
+                      <View key={index} style={styles.imagePreviewContainer}>
+                        <Image
+                          source={{ uri }}
+                          style={styles.imagePreview}
+                        />
+                        <TouchableOpacity
+                          style={styles.removeImageButton}
+                          onPress={() => removeImage(index)}
+                        >
+                          <Ionicons name="close-circle" size={24} color="#ef4444" />
+                        </TouchableOpacity>
+                      </View>
+                    ))}
+                  </ScrollView>
+                </View>
+              )}
+            </ScrollView>
+
+            {/* Submit Button */}
+            <View style={styles.createLogFooter}>
+              <TouchableOpacity
+                style={[styles.modalButton, styles.modalCancel]}
+                onPress={() => setCreateLogModalVisible(false)}
+              >
+                <Text style={styles.modalCancelText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.modalButton, styles.modalSubmit]}
+                onPress={createLog}
+                disabled={isSubmittingLog}
+              >
+                {isSubmittingLog ? (
+                  <ActivityIndicator size="small" color="#fff" />
+                ) : (
+                  <Text style={styles.modalSubmitText}>Save Log</Text>
+                )}
               </TouchableOpacity>
             </View>
           </View>
@@ -1794,6 +2371,15 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     textAlign: 'center',
   },
+  modalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingBottom: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: '#1e293b',
+    marginBottom: 8,
+  },
   modalSubtitle: {
     color: '#2563eb',
     fontSize: 16,
@@ -1897,5 +2483,277 @@ const styles = StyleSheet.create({
     color: '#ef4444',
     fontSize: 16,
     fontWeight: '600',
+  },
+
+  // Logs Tab Styles
+  logsStatsContainer: {
+    flexDirection: 'row',
+    gap: 12,
+    marginBottom: 16,
+  },
+  logsStatCard: {
+    flex: 1,
+    backgroundColor: '#111827',
+    borderRadius: 12,
+    padding: 16,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#1e293b',
+  },
+  logsStatNumber: {
+    color: '#fff',
+    fontSize: 24,
+    fontWeight: 'bold',
+    marginTop: 8,
+  },
+  logsStatLabel: {
+    color: '#94a3b8',
+    fontSize: 12,
+    marginTop: 4,
+    textAlign: 'center',
+  },
+  logsContainer: {
+    gap: 12,
+    marginBottom: 80,
+  },
+  logsCard: {
+    backgroundColor: '#111827',
+    borderRadius: 12,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: '#1e293b',
+  },
+  logsHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  logsIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  logsInfo: {
+    flex: 1,
+    marginLeft: 12,
+  },
+  logsTitle: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  logsDate: {
+    color: '#64748b',
+    fontSize: 12,
+    marginTop: 2,
+  },
+  logsCategoryBadge: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 12,
+  },
+  logsCategoryText: {
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  logsDescription: {
+    color: '#94a3b8',
+    fontSize: 14,
+    lineHeight: 20,
+  },
+  logsImagesContainer: {
+    marginTop: 12,
+    backgroundColor: '#1e293b',
+    padding: 12,
+    borderRadius: 12,
+  },
+  logsImagesScroll: {
+    marginTop: 4,
+  },
+  logsImageThumbnail: {
+    width: 70,
+    height: 70,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#374151',
+    marginRight: 8,
+  },
+  logsImagesIndicator: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 12,
+    gap: 6,
+  },
+  logsImagesText: {
+    color: '#64748b',
+    fontSize: 12,
+  },
+  fab: {
+    position: 'absolute',
+    right: 20,
+    bottom: 20,
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: '#2563eb',
+    justifyContent: 'center',
+    alignItems: 'center',
+    elevation: 5,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 3.84,
+  },
+
+  // Create Log Modal Styles
+  createLogModalContent: {
+    width: '90%',
+    maxHeight: '80%',
+    padding: 0,
+    overflow: 'hidden',
+  },
+  createLogScrollView: {
+    padding: 16,
+    maxHeight: 400,
+  },
+  inputLabel: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '600',
+    marginBottom: 8,
+    marginTop: 12,
+  },
+  logInput: {
+    backgroundColor: '#1e293b',
+    borderRadius: 10,
+    padding: 12,
+    color: '#fff',
+    fontSize: 16,
+  },
+  logTextArea: {
+    minHeight: 100,
+    textAlignVertical: 'top',
+  },
+  categoryGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+    marginTop: 4,
+  },
+  categoryButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#1e293b',
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: 20,
+    gap: 6,
+    borderWidth: 1,
+    borderColor: '#374151',
+  },
+  categoryButtonText: {
+    color: '#94a3b8',
+    fontSize: 14,
+    fontWeight: '500',
+  },
+  categoryButtonTextSelected: {
+    color: '#fff',
+  },
+  imageNoteContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#1e293b',
+    padding: 12,
+    borderRadius: 10,
+    marginTop: 20,
+    gap: 8,
+  },
+  imageNoteText: {
+    color: '#64748b',
+    fontSize: 14,
+  },
+  imageButtonsContainer: {
+    flexDirection: 'row',
+    gap: 12,
+    marginTop: 8,
+  },
+  imagePickerButton: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#1e293b',
+    padding: 16,
+    borderRadius: 10,
+    gap: 8,
+    borderWidth: 1,
+    borderColor: '#374151',
+  },
+  imagePickerText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '500',
+  },
+  selectedImagesContainer: {
+    marginTop: 16,
+  },
+  selectedImagesLabel: {
+    color: '#94a3b8',
+    fontSize: 14,
+    marginBottom: 8,
+  },
+  imagePreviewContainer: {
+    position: 'relative',
+    marginRight: 10,
+    borderWidth: 2,
+    borderColor: '#374151',
+    borderRadius: 10,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 4,
+    elevation: 3,
+    backgroundColor: '#1e293b',
+  },
+  imagePreview: {
+    width: 80,
+    height: 80,
+    borderRadius: 8,
+    objectFit: 'cover',
+    borderWidth: 1,
+    borderColor: '#2563eb',
+  },
+  removeImageButton: {
+    position: 'absolute',
+    top: -8,
+    right: -8,
+  },
+  createLogFooter: {
+    flexDirection: 'row',
+    padding: 16,
+    borderTopWidth: 1,
+    borderTopColor: '#1e293b',
+    gap: 12,
+  },
+
+  // Image Viewer Modal Styles
+  imageViewerOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.95)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  imageViewerCloseButton: {
+    position: 'absolute',
+    top: 60,
+    right: 20,
+    zIndex: 10,
+    padding: 8,
+  },
+  imageViewerImage: {
+    width: '90%',
+    height: '80%',
   },
 });

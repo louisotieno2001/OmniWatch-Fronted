@@ -7,12 +7,13 @@ function Header() {
   const [menuVisible, setMenuVisible] = useState(false);
   const router = useRouter();
 
-  const menuItems: { title: string; icon: string; screen: '/about' | '/settings' }[] = [
+  const menuItems: { title: string; icon: string; screen: '/about' | '/settings' | '/support', }[] = [
     { title: 'About', icon: 'information-circle', screen: '/about' },
     { title: 'Settings', icon: 'settings', screen: '/settings' },
+    { title: 'Help & Support', icon: 'help-circle', screen: '/support'},
   ];
 
-  const navigateTo = (screen: '/about' | '/settings') => {
+  const navigateTo = (screen: '/about' | '/settings' | '/support') => {
     setMenuVisible(false);
     router.push(screen as any);
   };
