@@ -1,11 +1,11 @@
 {
   "expo": {
-    "name": "OmniWatcher",
-    "slug": "OmniWatcher",
+    "name": "OmniWatch",
+    "slug": "OmniWatch",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/logo.png",
-    "scheme": "omniwatcher",
+    "scheme": "omniwatch",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "ios": {
@@ -49,7 +49,7 @@
       "eas": {
         "projectId": "75e426ae-f166-4810-9abf-4b668bffbe3d"
       },
-      "apiUrl": "http://10.130.145.109:5000/api"
+      "apiUrl": "http://10.204.202.75:5000/api"
     }
   }
 }

@@ -1,6 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   SafeAreaView,
   StyleSheet,
@@ -10,7 +10,13 @@ import {
   View,
   ScrollView,
   Modal,
+  ActivityIndicator,
+  Alert,
 } from 'react-native';
+import Constants from 'expo-constants';
+import { getUserSession, clearUserSession } from './services/auth.storage';
+
+const API_URL = Constants.expoConfig?.extra?.apiUrl;
 
 // Interfaces
 interface Guard {
@@ -43,7 +49,7 @@ interface Patrol {
   notes?: string;
 }
 
-interface Alert {
+interface LogItem {
   id: string;
   type: 'emergency' | 'warning' | 'info' | 'maintenance';
   title: string;
@@ -63,198 +69,326 @@ interface AdminProfile {
   role: string;
   email: string;
   phone: string;
-  department: string;
   joinDate: string;
   managedGuards: number;
   totalLocations: number;
 }
 
-// Dummy data
-const DUMMY_GUARDS: Guard[] = [
-  {
-    id: 'GND-2024-001',
-    name: 'John Smith',
-    location: 'OmniWatch Headquarters',
-    locationId: 'loc_1',
-    status: 'active',
-    lastSeen: '2 minutes ago',
-    assignedAreas: ['Front Gate', 'Garden'],
-    operatingHours: { start: '18:00', end: '06:00' },
-    phone: '+1-555-0101',
-    email: 'john.smith@omniwatch.com',
-    joinDate: '2023-01-15',
-  },
-  {
-    id: 'GND-2024-002',
-    name: 'Sarah Johnson',
-    location: 'Eastgate Shopping Mall',
-    locationId: 'loc_2',
-    status: 'active',
-    lastSeen: '5 minutes ago',
-    assignedAreas: ['Parking Lot', 'Main Building'],
-    operatingHours: { start: '20:00', end: '08:00' },
-    phone: '+1-555-0102',
-    email: 'sarah.johnson@omniwatch.com',
-    joinDate: '2023-03-20',
-  },
-  {
-    id: 'GND-2024-003',
-    name: 'Mike Davis',
-    location: 'Westside Industrial Park',
-    locationId: 'loc_3',
-    status: 'on-break',
-    lastSeen: '15 minutes ago',
-    assignedAreas: ['Perimeter', 'Warehouse'],
-    operatingHours: { start: '22:00', end: '10:00' },
-    phone: '+1-555-0103',
-    email: 'mike.davis@omniwatch.com',
-    joinDate: '2023-05-10',
-  },
-  {
-    id: 'GND-2024-004',
-    name: 'Lisa Chen',
-    location: 'Northgate Residential Complex',
-    locationId: 'loc_4',
-    status: 'inactive',
-    lastSeen: '2 hours ago',
-    assignedAreas: ['Lobby', 'CCTV Room'],
-    operatingHours: { start: '16:00', end: '04:00' },
-    phone: '+1-555-0104',
-    email: 'lisa.chen@omniwatch.com',
-    joinDate: '2023-07-05',
-  },
-];
+// API data - populated via useEffect
+// Location interface
+interface LocationData {
+  id: string;
+  name: string;
+  assigned_areas?: string;
+}
 
-const DUMMY_PATROLS: Patrol[] = [
-  {
-    id: 'PTL-001',
-    guardId: 'GND-2024-001',
-    guardName: 'John Smith',
-    location: 'OmniWatch Headquarters',
-    startTime: '2024-01-17T18:00:00Z',
-    endTime: '2024-01-17T19:30:00Z',
-    duration: '1:30:00',
-    checkpoints: ['Front Gate', 'Garden', 'Parking Lot'],
-    status: 'completed',
-    notes: 'All areas secure',
-  },
-  {
-    id: 'PTL-002',
-    guardId: 'GND-2024-002',
-    guardName: 'Sarah Johnson',
-    location: 'Eastgate Shopping Mall',
-    startTime: '2024-01-17T20:00:00Z',
-    endTime: '2024-01-17T20:45:00Z',
-    duration: '0:45:00',
-    checkpoints: ['Parking Lot', 'Main Building'],
-    status: 'in-progress',
-  },
-  {
-    id: 'PTL-003',
-    guardId: 'GND-2024-003',
-    guardName: 'Mike Davis',
-    location: 'Westside Industrial Park',
-    startTime: '2024-01-17T14:00:00Z',
-    endTime: '2024-01-17T15:45:00Z',
-    duration: '1:45:00',
-    checkpoints: ['Perimeter', 'Warehouse'],
-    status: 'completed',
-  },
-];
+interface SessionUserData {
+  id: string;
+  first_name: string;
+  last_name: string;
+  email: string;
+  phone: string;
+  role: string;
+}
 
-const DUMMY_ALERTS: Alert[] = [
-  {
-    id: 'ALT-001',
-    type: 'emergency',
-    title: 'Security Breach Detected',
-    message: 'Unauthorized access attempt at Front Gate',
-    guardId: 'GND-2024-001',
-    guardName: 'John Smith',
-    location: 'OmniWatch Headquarters',
-    timestamp: '2024-01-17T18:15:00Z',
-    priority: 'high',
-    status: 'active',
-  },
-  {
-    id: 'ALT-002',
-    type: 'warning',
-    title: 'Guard Check-in Missed',
-    message: 'Mike Davis has not checked in for 30 minutes',
-    guardId: 'GND-2024-003',
-    guardName: 'Mike Davis',
-    location: 'Westside Industrial Park',
-    timestamp: '2024-01-17T15:30:00Z',
-    priority: 'medium',
-    status: 'active',
-  },
-  {
-    id: 'ALT-003',
-    type: 'info',
-    title: 'Patrol Completed',
-    message: 'Routine patrol completed successfully',
-    guardId: 'GND-2024-001',
-    guardName: 'John Smith',
-    location: 'OmniWatch Headquarters',
-    timestamp: '2024-01-17T19:30:00Z',
-    priority: 'low',
-    status: 'acknowledged',
-  },
-  {
-    id: 'ALT-004',
-    type: 'maintenance',
-    title: 'Camera Maintenance Required',
-    message: 'Camera at Parking Lot requires cleaning',
-    location: 'Eastgate Shopping Mall',
-    timestamp: '2024-01-17T12:00:00Z',
-    priority: 'low',
-    status: 'resolved',
-  },
-];
-
-const LOCATIONS = [
-  { id: 'loc_1', name: 'OmniWatch Headquarters' },
-  { id: 'loc_2', name: 'Eastgate Shopping Mall' },
-  { id: 'loc_3', name: 'Westside Industrial Park' },
-  { id: 'loc_4', name: 'Northgate Residential Complex' },
-  { id: 'loc_5', name: 'Southgate Warehouse Facility' },
-];
 
 export default function AdminDashboard() {
   const router = useRouter();
-  const [activeTab, setActiveTab] = useState<'guards' | 'patrols' | 'details' | 'alerts' | 'settings'>('guards');
+  const [activeTab, setActiveTab] = useState<'guards' | 'patrols' | 'details' | 'logs' | 'settings'>('guards');
+
+  // Loading states
+  const [isLoading, setIsLoading] = useState(true);
 
   // Guards Tab State
-  const [guards] = useState<Guard[]>(DUMMY_GUARDS);
+  const [guards, setGuards] = useState<Guard[]>([]);
   const [guardSearchQuery, setGuardSearchQuery] = useState('');
   const [selectedGuard, setSelectedGuard] = useState<Guard | null>(null);
   const [guardModalVisible, setGuardModalVisible] = useState(false);
 
   // Patrols Tab State
-  const [patrols] = useState<Patrol[]>(DUMMY_PATROLS);
+  const [patrols, setPatrols] = useState<Patrol[]>([]);
   const [patrolSearchQuery, setPatrolSearchQuery] = useState('');
   const [patrolFilterLocation] = useState('');
   const [patrolFilterDate] = useState('');
   const [selectedPatrol, setSelectedPatrol] = useState<Patrol | null>(null);
   const [patrolModalVisible, setPatrolModalVisible] = useState(false);
 
-  // Alerts Tab State
-  const [alerts] = useState<Alert[]>(DUMMY_ALERTS);
-  const [selectedAlert, setSelectedAlert] = useState<Alert | null>(null);
-  const [alertModalVisible, setAlertModalVisible] = useState(false);
+  // Logs Tab State
+  const [logs, setLogs] = useState<LogItem[]>([]);
+  const [selectedLog, setSelectedLog] = useState<LogItem | null>(null);
+  const [logModalVisible, setLogModalVisible] = useState(false);
 
-  // Details Tab State
-  const [adminProfile] = useState<AdminProfile>({
-    name: 'Admin Supervisor',
-    id: 'ADM-2024-001',
-    company: 'OmniWatch Security',
+  // Locations State
+  const [locations, setLocations] = useState<LocationData[]>([]);
+
+  // Admin Profile State
+  const [adminProfile, setAdminProfile] = useState<AdminProfile>({
+    name: '',
+    id: '',
+    company: '',
     role: 'Security Supervisor',
-    email: 'admin@omniwatch.com',
-    phone: '+1-555-0000',
-    department: 'Operations',
-    joinDate: '2022-01-01',
-    managedGuards: 4,
-    totalLocations: 5,
+    email: '',
+    phone: '',
+    joinDate: new Date().toISOString(),
+    managedGuards: 0,
+    totalLocations: 0,
   });
+
+  const getAuthHeaders = (token: string) => ({
+    'Authorization': `Bearer ${token}`,
+    'Content-Type': 'application/json',
+  });
+
+  // Fetch data from APIs
+  const fetchAllData = async (token: string) => {
+    try {
+      setIsLoading(true);
+
+      // Fetch guards
+      try {
+        console.log('[AdminDash] Fetching guards from API...');
+        const guardsResponse = await fetch(`${API_URL}/admin/guards`, {
+          method: 'GET',
+          headers: getAuthHeaders(token),
+        });
+        
+        console.log('[AdminDash] Guards response status:', guardsResponse.status);
+        
+        if (guardsResponse.ok) {
+          const guardsData = await guardsResponse.json();
+          console.log('[AdminDash] Raw guards data:', guardsData);
+          
+          // Map API response to Guard interface
+          const mappedGuards: Guard[] = (guardsData.guards || []).map((guard: any) => ({
+            id: guard.id || '',
+            name: `${guard.first_name || ''} ${guard.last_name || ''}`.trim() || 'Unknown',
+            location: guard.location || 'Not assigned',
+            locationId: guard.location_id || '',
+            status: guard.status === 'active' ? 'active' : guard.status === 'on-break' ? 'on-break' : 'inactive',
+            lastSeen: guard.last_access ? new Date(guard.last_access).toLocaleString() : 'Never',
+            assignedAreas: guard.assigned_areas ? guard.assigned_areas.split(',').map((a: string) => a.trim()) : [],
+            operatingHours: {
+              start: guard.operating_hours_start || '09:00',
+              end: guard.operating_hours_end || '17:00',
+            },
+            phone: guard.phone || '',
+            email: guard.email || '',
+            joinDate: guard.date_created ? new Date(guard.date_created).toISOString() : new Date().toISOString(),
+          }));
+          
+          console.log('[AdminDash] Mapped guards:', mappedGuards);
+          setGuards(mappedGuards);
+        } else {
+          const errorText = await guardsResponse.text();
+          console.error('[AdminDash] Failed to fetch guards. Status:', guardsResponse.status, 'Response:', errorText);
+        }
+      } catch (error: any) {
+        console.error('[AdminDash] Error fetching guards:', error.message || error);
+      }
+
+      // Fetch patrols
+      try {
+        console.log('[AdminDash] Fetching patrols from API...');
+        const patrolsResponse = await fetch(`${API_URL}/admin/patrols?limit=50`, {
+          method: 'GET',
+          headers: getAuthHeaders(token),
+        });
+        
+        console.log('[AdminDash] Patrols response status:', patrolsResponse.status);
+        
+        if (patrolsResponse.ok) {
+          const patrolsData = await patrolsResponse.json();
+          console.log('[AdminDash] Raw patrols data:', patrolsData);
+          
+          // Map API response to Patrol interface
+          const mappedPatrols: Patrol[] = (patrolsData.patrols || []).map((patrol: any) => ({
+            id: patrol.id || '',
+            guardId: patrol.user_id || '',
+            guardName: patrol.guard_name || 'Unknown Guard',
+            location: patrol.location || 'Unknown Location',
+            startTime: patrol.start_time || '',
+            endTime: patrol.end_time || '',
+            duration: patrol.duration ? `${patrol.duration} mins` : 'N/A',
+            checkpoints: Array.isArray(patrol.checkpoints)
+              ? patrol.checkpoints.map((c: string) => String(c).trim()).filter(Boolean)
+              : typeof patrol.checkpoints === 'string'
+                ? patrol.checkpoints.split(',').map((c: string) => c.trim()).filter(Boolean)
+                : typeof patrol.assigned_areas === 'string'
+                  ? patrol.assigned_areas.split(',').map((c: string) => c.trim()).filter(Boolean)
+                  : [],
+            status: patrol.status === 'completed' ? 'completed' : patrol.status === 'active' ? 'in-progress' : 'missed',
+            notes: patrol.notes || '',
+          }));
+          
+          console.log('[AdminDash] Mapped patrols:', mappedPatrols);
+          setPatrols(mappedPatrols);
+        } else {
+          const errorText = await patrolsResponse.text();
+          console.error('[AdminDash] Failed to fetch patrols. Status:', patrolsResponse.status, 'Response:', errorText);
+        }
+      } catch (error: any) {
+        console.error('[AdminDash] Error fetching patrols:', error.message || error);
+      }
+
+      // Fetch logs
+      try {
+        console.log('[AdminDash] Fetching logs from API...');
+        const logsResponse = await fetch(`${API_URL}/admin/logs?limit=50`, {
+          method: 'GET',
+          headers: getAuthHeaders(token),
+        });
+        
+        console.log('[AdminDash] Logs response status:', logsResponse.status);
+        
+        if (logsResponse.ok) {
+          const logsData = await logsResponse.json();
+          console.log('[AdminDash] Raw logs data:', logsData);
+          
+          const rawLogs = logsData.logs || [];
+          const mappedLogs: LogItem[] = rawLogs.map((log: any) => ({
+            id: log.id || '',
+            type: log.category === 'incident' ? 'emergency' : log.category === 'unusual' ? 'warning' : log.category === 'maintenance' ? 'maintenance' : 'info',
+            title: log.title || 'Untitled Log',
+            message: log.description || '',
+            guardId: log.user_id || '',
+            guardName: log.guard_name || '',
+            location: log.location || 'Unknown Location',
+            timestamp: log.timestamp || new Date().toISOString(),
+            priority: log.priority === 'high' ? 'high' : log.priority === 'medium' ? 'medium' : 'low',
+            status: log.status === 'resolved' ? 'resolved' : log.status === 'acknowledged' ? 'acknowledged' : 'active',
+          }));
+          
+          console.log('[AdminDash] Mapped logs:', mappedLogs);
+          setLogs(mappedLogs);
+        } else {
+          const errorText = await logsResponse.text();
+          console.error('[AdminDash] Failed to fetch logs. Status:', logsResponse.status, 'Response:', errorText);
+        }
+      } catch (error: any) {
+        console.error('[AdminDash] Error fetching logs:', error.message || error);
+      }
+
+      // Fetch locations
+      try {
+        console.log('[AdminDash] Fetching locations from API...');
+        const locationsResponse = await fetch(`${API_URL}/admin/locations`, {
+          method: 'GET',
+          headers: getAuthHeaders(token),
+        });
+        
+        console.log('[AdminDash] Locations response status:', locationsResponse.status);
+        
+        if (locationsResponse.ok) {
+          const locationsData = await locationsResponse.json();
+          console.log('[AdminDash] Raw locations data:', locationsData);
+          setLocations(locationsData.locations || []);
+        } else {
+          const errorText = await locationsResponse.text();
+          console.error('[AdminDash] Failed to fetch locations. Status:', locationsResponse.status, 'Response:', errorText);
+        }
+      } catch (error: any) {
+        console.error('[AdminDash] Error fetching locations:', error.message || error);
+      }
+
+      // Fetch current user profile
+      try {
+        console.log('[AdminDash] Fetching user profile from API...');
+        const userResponse = await fetch(`${API_URL}/me`, {
+          method: 'GET',
+          headers: getAuthHeaders(token),
+        });
+        
+        console.log('[AdminDash] User profile response status:', userResponse.status);
+        
+        if (userResponse.ok) {
+          const userData = await userResponse.json();
+          console.log('[AdminDash] Raw user data:', userData);
+          if (userData.user) {
+            setAdminProfile(prev => ({
+              ...prev,
+              name: `${userData.user.first_name || ''} ${userData.user.last_name || ''}`.trim() || 'Admin Supervisor',
+              id: userData.user.id || '',
+              company: userData.user.company || prev.company || '',
+              phone: userData.user.phone || '',
+              role: userData.user.role || 'admin',
+            }));
+          }
+        } else {
+          const errorText = await userResponse.text();
+          console.error('[AdminDash] Failed to fetch user profile. Status:', userResponse.status, 'Response:', errorText);
+        }
+      } catch (error: any) {
+        console.error('[AdminDash] Error fetching user profile:', error.message || error);
+      }
+
+    } catch (error: any) {
+      console.error('[AdminDash] Error in fetchAllData:', error.message || error);
+    } finally {
+      setIsLoading(false);
+      console.log('[AdminDash] fetchAllData completed');
+    }
+  };
+
+  const loadUserSession = async () => {
+    try {
+      setIsLoading(true);
+      const { token, userData: storedUserData } = await getUserSession();
+
+      if (!token || !storedUserData) {
+        Alert.alert(
+          'Session Expired',
+          'Please login again to continue.',
+          [{ text: 'OK', onPress: () => router.replace('/login') }]
+        );
+        return;
+      }
+
+      const typedUserData = storedUserData as SessionUserData;
+      if (typedUserData.role !== 'admin' && typedUserData.role !== 'supervisor') {
+        if (typedUserData.role === 'guard') {
+          router.replace('/guard_dash');
+        } else {
+          Alert.alert(
+            'Access Denied',
+            'You do not have permission to access this page.',
+            [{ text: 'OK', onPress: () => router.replace('/login') }]
+          );
+        }
+        return;
+      }
+
+      setAdminProfile(prev => ({
+        ...prev,
+        name: `${typedUserData.first_name || ''} ${typedUserData.last_name || ''}`.trim() || 'Admin Supervisor',
+        id: typedUserData.id || '',
+        phone: typedUserData.phone || '',
+        role: typedUserData.role || 'admin',
+      }));
+
+      await fetchAllData(token);
+    } catch (error: any) {
+      console.error('[AdminDash] Error loading session:', error.message || error);
+      Alert.alert('Error', 'Failed to load user data. Please login again.');
+      router.replace('/login');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleLogout = async () => {
+    try {
+      await clearUserSession();
+      router.replace('/login');
+    } catch (error: any) {
+      console.error('[AdminDash] Logout error:', error.message || error);
+      Alert.alert('Error', 'Failed to logout. Please try again.');
+    }
+  };
+
+  // Load session and data on mount
+  useEffect(() => {
+    loadUserSession();
+  }, []);
 
   // Filter guards based on search
   const filteredGuards = guards.filter(guard =>
@@ -284,8 +418,8 @@ export default function AdminDashboard() {
     }
   };
 
-  // Get alert icon
-  const getAlertIcon = (type: string) => {
+  // Get log icon
+  const getLogIcon = (type: string) => {
     switch (type) {
       case 'emergency': return 'alert-circle';
       case 'warning': return 'warning';
@@ -295,8 +429,8 @@ export default function AdminDashboard() {
     }
   };
 
-  // Get alert color
-  const getAlertColor = (priority: string) => {
+  // Get log color
+  const getLogColor = (priority: string) => {
     switch (priority) {
       case 'high': return '#ef4444';
       case 'medium': return '#f59e0b';
@@ -323,10 +457,10 @@ export default function AdminDashboard() {
     setPatrolModalVisible(true);
   };
 
-  // Handle alert selection
-  const handleAlertPress = (alert: Alert) => {
-    setSelectedAlert(alert);
-    setAlertModalVisible(true);
+  // Handle log selection
+  const handleLogPress = (log: LogItem) => {
+    setSelectedLog(log);
+    setLogModalVisible(true);
   };
 
   // Render Guards Tab
@@ -358,7 +492,7 @@ export default function AdminDashboard() {
         </View>
         <View style={styles.statCard}>
           <Ionicons name="location" size={24} color="#f59e0b" />
-          <Text style={styles.statNumber}>{LOCATIONS.length}</Text>
+          <Text style={styles.statNumber}>{locations.length}</Text>
           <Text style={styles.statLabel}>Locations</Text>
         </View>
       </View>
@@ -459,8 +593,8 @@ export default function AdminDashboard() {
     </ScrollView>
   );
 
-  // Render Alerts Tab
-  const renderAlertsTab = () => (
+  // Render Logs Tab
+  const renderLogsTab = () => (
     <ScrollView style={styles.tabContent}>
       {/* Filters */}
       <View style={styles.filtersContainer}>
@@ -476,51 +610,51 @@ export default function AdminDashboard() {
         </TouchableOpacity>
       </View>
 
-      {/* Alert Stats */}
+      {/* Log Stats */}
       <View style={styles.statsContainer}>
         <View style={styles.statCard}>
           <Ionicons name="alert-circle" size={24} color="#ef4444" />
-          <Text style={styles.statNumber}>{alerts.filter(a => a.status === 'active').length}</Text>
-          <Text style={styles.statLabel}>Active Alerts</Text>
+          <Text style={styles.statNumber}>{logs.filter(l => l.status === 'active').length}</Text>
+          <Text style={styles.statLabel}>Active Logs</Text>
         </View>
         <View style={styles.statCard}>
           <Ionicons name="checkmark-circle" size={24} color="#f59e0b" />
-          <Text style={styles.statNumber}>{alerts.filter(a => a.priority === 'high').length}</Text>
+          <Text style={styles.statNumber}>{logs.filter(l => l.priority === 'high').length}</Text>
           <Text style={styles.statLabel}>High Priority</Text>
         </View>
         <View style={styles.statCard}>
           <Ionicons name="time" size={24} color="#22c55e" />
-          <Text style={styles.statNumber}>{alerts.filter(a => a.status === 'resolved').length}</Text>
+          <Text style={styles.statNumber}>{logs.filter(l => l.status === 'resolved').length}</Text>
           <Text style={styles.statLabel}>Resolved</Text>
         </View>
       </View>
 
-      {/* Alerts List */}
-      <Text style={styles.sectionTitle}>Recent Alerts</Text>
-      {alerts.map((alert) => (
+      {/* Logs List */}
+      <Text style={styles.sectionTitle}>Recent Logs</Text>
+      {logs.map((log) => (
         <TouchableOpacity
-          key={alert.id}
+          key={log.id}
           style={styles.alertCard}
-          onPress={() => handleAlertPress(alert)}
+          onPress={() => handleLogPress(log)}
         >
           <View style={styles.alertHeader}>
-            <View style={[styles.alertIcon, { backgroundColor: getAlertColor(alert.priority) + '20' }]}>
-              <Ionicons name={getAlertIcon(alert.type)} size={20} color={getAlertColor(alert.priority)} />
+            <View style={[styles.alertIcon, { backgroundColor: getLogColor(log.priority) + '20' }]}>
+              <Ionicons name={getLogIcon(log.type)} size={20} color={getLogColor(log.priority)} />
             </View>
             <View style={styles.alertInfo}>
-              <Text style={styles.alertTitle}>{alert.title}</Text>
-              <Text style={styles.alertLocation}>{alert.location}</Text>
+              <Text style={styles.alertTitle}>{log.title}</Text>
+              <Text style={styles.alertLocation}>{log.location}</Text>
             </View>
             <View style={styles.alertStatus}>
-              <View style={[styles.priorityIndicator, { backgroundColor: getAlertColor(alert.priority) }]} />
-              <Text style={styles.priorityText}>{alert.priority}</Text>
+              <View style={[styles.priorityIndicator, { backgroundColor: getLogColor(log.priority) }]} />
+              <Text style={styles.priorityText}>{log.priority}</Text>
             </View>
           </View>
           <View style={styles.alertDetails}>
-            <Text style={styles.alertMessage} numberOfLines={2}>{alert.message}</Text>
-            <Text style={styles.alertTime}>{formatDate(alert.timestamp)}</Text>
-            {alert.guardName && (
-              <Text style={styles.alertGuard}>Guard: {alert.guardName}</Text>
+            <Text style={styles.alertMessage} numberOfLines={2}>{log.message}</Text>
+            <Text style={styles.alertTime}>{formatDate(log.timestamp)}</Text>
+            {log.guardName && (
+              <Text style={styles.alertGuard}>Guard: {log.guardName}</Text>
             )}
           </View>
         </TouchableOpacity>
@@ -558,13 +692,6 @@ export default function AdminDashboard() {
           </View>
         </View>
         <View style={styles.infoRow}>
-          <Ionicons name="briefcase" size={20} color="#2563eb" />
-          <View style={styles.infoContent}>
-            <Text style={styles.infoLabel}>Department</Text>
-            <Text style={styles.infoValue}>{adminProfile.department}</Text>
-          </View>
-        </View>
-        <View style={styles.infoRow}>
           <Ionicons name="calendar" size={20} color="#2563eb" />
           <View style={styles.infoContent}>
             <Text style={styles.infoLabel}>Join Date</Text>
@@ -576,13 +703,6 @@ export default function AdminDashboard() {
       {/* Contact Info */}
       <Text style={styles.sectionTitle}>Contact Information</Text>
       <View style={styles.card}>
-        <View style={styles.infoRow}>
-          <Ionicons name="mail" size={20} color="#2563eb" />
-          <View style={styles.infoContent}>
-            <Text style={styles.infoLabel}>Email</Text>
-            <Text style={styles.infoValue}>{adminProfile.email}</Text>
-          </View>
-        </View>
         <View style={styles.infoRow}>
           <Ionicons name="call" size={20} color="#2563eb" />
           <View style={styles.infoContent}>
@@ -740,6 +860,18 @@ export default function AdminDashboard() {
     </ScrollView>
   );
 
+  // Show loading screen while fetching data
+  if (isLoading) {
+    return (
+      <SafeAreaView style={{ flex: 1, backgroundColor: '#0f172a' }}>
+        <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
+          <ActivityIndicator size="large" color="#2563eb" />
+          <Text style={{ color: '#94a3b8', fontSize: 16, marginTop: 16 }}>Loading dashboard...</Text>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
   return (
     <SafeAreaView style={styles.container}>
       {/* Header */}
@@ -748,7 +880,7 @@ export default function AdminDashboard() {
           <Text style={styles.headerTitle}>Admin Dashboard</Text>
           <Text style={styles.headerSubtitle}>{adminProfile.company}</Text>
         </View>
-        <TouchableOpacity onPress={() => router.replace('/login')}>
+        <TouchableOpacity onPress={handleLogout}>
           <Ionicons name="log-out-outline" size={24} color="#ef4444" />
         </TouchableOpacity>
       </View>
@@ -757,7 +889,7 @@ export default function AdminDashboard() {
       <View style={styles.content}>
         {activeTab === 'guards' ? renderGuardsTab() :
          activeTab === 'patrols' ? renderPatrolsTab() :
-         activeTab === 'alerts' ? renderAlertsTab() :
+         activeTab === 'logs' ? renderLogsTab() :
          activeTab === 'details' ? renderDetailsTab() :
          renderSettingsTab()}
       </View>
@@ -794,15 +926,15 @@ export default function AdminDashboard() {
 
         <TouchableOpacity
           style={styles.bottomTab}
-          onPress={() => setActiveTab('alerts')}
+          onPress={() => setActiveTab('logs')}
         >
           <Ionicons 
-            name={activeTab === 'alerts' ? 'notifications' : 'notifications-outline'} 
+            name={activeTab === 'logs' ? 'notifications' : 'notifications-outline'} 
             size={22} 
-            color={activeTab === 'alerts' ? '#2563eb' : '#94a3b8'} 
+            color={activeTab === 'logs' ? '#2563eb' : '#94a3b8'} 
           />
-          <Text style={[styles.bottomTabText, activeTab === 'alerts' && styles.bottomTabActive]}>
-            Alerts
+          <Text style={[styles.bottomTabText, activeTab === 'logs' && styles.bottomTabActive]}>
+            Logs
           </Text>
         </TouchableOpacity>
 
@@ -1022,20 +1154,20 @@ export default function AdminDashboard() {
         </View>
       </Modal>
 
-      {/* Alert Detail Modal */}
+      {/* Log Detail Modal */}
       <Modal
-        visible={alertModalVisible}
+        visible={logModalVisible}
         transparent
         animationType="fade"
-        onRequestClose={() => setAlertModalVisible(false)}
+        onRequestClose={() => setLogModalVisible(false)}
       >
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
-            {selectedAlert && (
+            {selectedLog && (
               <>
                 <View style={styles.modalHeader}>
-                  <Text style={styles.modalTitle}>Alert Details</Text>
-                  <TouchableOpacity onPress={() => setAlertModalVisible(false)}>
+                  <Text style={styles.modalTitle}>Log Details</Text>
+                  <TouchableOpacity onPress={() => setLogModalVisible(false)}>
                     <Ionicons name="close" size={24} color="#fff" />
                   </TouchableOpacity>
                 </View>
@@ -1043,43 +1175,43 @@ export default function AdminDashboard() {
                 <ScrollView style={styles.modalBody}>
                   <View style={styles.alertDetailCard}>
                     <View style={styles.alertDetailHeader}>
-                      <View style={[styles.alertDetailIcon, { backgroundColor: getAlertColor(selectedAlert.priority) + '20' }]}>
-                        <Ionicons name={getAlertIcon(selectedAlert.type)} size={24} color={getAlertColor(selectedAlert.priority)} />
+                      <View style={[styles.alertDetailIcon, { backgroundColor: getLogColor(selectedLog.priority) + '20' }]}>
+                        <Ionicons name={getLogIcon(selectedLog.type)} size={24} color={getLogColor(selectedLog.priority)} />
                       </View>
                       <View style={styles.alertDetailInfo}>
-                        <Text style={styles.alertDetailTitle}>{selectedAlert.title}</Text>
-                        <Text style={styles.alertDetailLocation}>{selectedAlert.location}</Text>
+                        <Text style={styles.alertDetailTitle}>{selectedLog.title}</Text>
+                        <Text style={styles.alertDetailLocation}>{selectedLog.location}</Text>
                         <View style={styles.statusBadge}>
-                          <View style={[styles.statusIndicator, { backgroundColor: getAlertColor(selectedAlert.priority) }]} />
-                          <Text style={styles.statusBadgeText}>{selectedAlert.priority} priority</Text>
+                          <View style={[styles.statusIndicator, { backgroundColor: getLogColor(selectedLog.priority) }]} />
+                          <Text style={styles.statusBadgeText}>{selectedLog.priority} priority</Text>
                         </View>
                       </View>
                     </View>
                   </View>
 
                   <View style={styles.detailSection}>
-                    <Text style={styles.detailSectionTitle}>Alert Information</Text>
-                    <Text style={styles.alertDetailMessage}>{selectedAlert.message}</Text>
+                    <Text style={styles.detailSectionTitle}>Log Information</Text>
+                    <Text style={styles.alertDetailMessage}>{selectedLog.message}</Text>
                     <View style={styles.detailRow}>
                       <Ionicons name="time" size={18} color="#64748b" />
-                      <Text style={styles.detailText}>Time: {formatDate(selectedAlert.timestamp)}</Text>
+                      <Text style={styles.detailText}>Time: {formatDate(selectedLog.timestamp)}</Text>
                     </View>
                     <View style={styles.detailRow}>
                       <Ionicons name="radio-button-on" size={18} color="#64748b" />
-                      <Text style={styles.detailText}>Status: {selectedAlert.status}</Text>
+                      <Text style={styles.detailText}>Status: {selectedLog.status}</Text>
                     </View>
                   </View>
 
-                  {selectedAlert.guardName && (
+                  {selectedLog.guardName && (
                     <View style={styles.detailSection}>
                       <Text style={styles.detailSectionTitle}>Related Guard</Text>
                       <View style={styles.detailRow}>
                         <Ionicons name="person" size={18} color="#64748b" />
-                        <Text style={styles.detailText}>{selectedAlert.guardName}</Text>
+                        <Text style={styles.detailText}>{selectedLog.guardName}</Text>
                       </View>
                       <View style={styles.detailRow}>
                         <Ionicons name="id-card" size={18} color="#64748b" />
-                        <Text style={styles.detailText}>ID: {selectedAlert.guardId}</Text>
+                        <Text style={styles.detailText}>ID: {selectedLog.guardId}</Text>
                       </View>
                     </View>
                   )}
