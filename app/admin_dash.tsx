@@ -94,6 +94,7 @@ interface SessionUserData {
   email: string;
   phone: string;
   role: string;
+  invite_code?: string;
 }
 
 
@@ -180,7 +181,7 @@ export default function AdminDashboard() {
         if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return null;
         return { latitude, longitude };
       })
-      .filter((point): point is { latitude: number; longitude: number } => point !== null);
+      .filter((point: any): point is { latitude: number; longitude: number } => point !== null);
   }
 
   function getRegionFromCoordinates(coords: Array<{ latitude: number; longitude: number }>) {
@@ -450,6 +451,7 @@ export default function AdminDashboard() {
         id: typedUserData.id || '',
         phone: typedUserData.phone || '',
         role: typedUserData.role || 'admin',
+        company: prev.company || typedUserData.invite_code || '',
       }));
 
       await fetchAllData(token);
@@ -620,7 +622,7 @@ export default function AdminDashboard() {
     }
 
     const lateSeconds = Math.floor((nowTime.getTime() - shiftStart.getTime()) / 1000);
-    return `Late by: ${formatDurationFromSeconds(lateSeconds)}`;
+    return `Not seen for: ${formatDurationFromSeconds(lateSeconds)} from assigned start time`;
   };
 
   const handleCallGuard = async (phone?: string) => {
