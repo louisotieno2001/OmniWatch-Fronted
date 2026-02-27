@@ -86,6 +86,10 @@ export default function RootLayout() {
       <Stack.Screen name="OTP" options={{headerShown: false}} />
       <Stack.Screen name="guard_dash" />
       <Stack.Screen name="admin_dash" />
+      <Stack.Screen name="locations" />
+      <Stack.Screen name="add_locations" />
+      <Stack.Screen name="manage_guards" />
+      <Stack.Screen name="new_assignment" />
     </Stack>
   );
 }
@@ -169,4 +173,3 @@ const styles = StyleSheet.create({
     marginLeft: 12,
   },
 });
-

@@ -12,6 +12,7 @@ import {
   Modal,
   ActivityIndicator,
   Alert,
+  Image,
 } from 'react-native';
 import Constants from 'expo-constants';
 import { getUserSession, clearUserSession } from './services/auth.storage';
@@ -60,6 +61,7 @@ interface LogItem {
   timestamp: string;
   priority: 'high' | 'medium' | 'low';
   status: 'active' | 'acknowledged' | 'resolved';
+  images?: string | null;
 }
 
 interface AdminProfile {
@@ -117,6 +119,8 @@ export default function AdminDashboard() {
   const [logs, setLogs] = useState<LogItem[]>([]);
   const [selectedLog, setSelectedLog] = useState<LogItem | null>(null);
   const [logModalVisible, setLogModalVisible] = useState(false);
+  const [selectedLogImage, setSelectedLogImage] = useState<string | null>(null);
+  const [logImageModalVisible, setLogImageModalVisible] = useState(false);
 
   // Locations State
   const [locations, setLocations] = useState<LocationData[]>([]);
@@ -164,8 +168,15 @@ export default function AdminDashboard() {
             name: `${guard.first_name || ''} ${guard.last_name || ''}`.trim() || 'Unknown',
             location: guard.location || 'Not assigned',
             locationId: guard.location_id || '',
-            status: guard.status === 'active' ? 'active' : guard.status === 'on-break' ? 'on-break' : 'inactive',
-            lastSeen: guard.last_access ? new Date(guard.last_access).toLocaleString() : 'Never',
+            status: guard.is_online ? 'active' : 'inactive',
+            lastSeen:
+              guard.last_seen_display === 'Online (Currently on patrol)'
+                ? 'Online (Currently on patrol)'
+                : guard.last_seen
+                  ? new Date(guard.last_seen).toLocaleString()
+                  : guard.last_access
+                    ? new Date(guard.last_access).toLocaleString()
+                    : 'Never',
             assignedAreas: guard.assigned_areas ? guard.assigned_areas.split(',').map((a: string) => a.trim()) : [],
             operatingHours: {
               start: guard.operating_hours_start || '09:00',
@@ -256,6 +267,7 @@ export default function AdminDashboard() {
             timestamp: log.timestamp || new Date().toISOString(),
             priority: log.priority === 'high' ? 'high' : log.priority === 'medium' ? 'medium' : 'low',
             status: log.status === 'resolved' ? 'resolved' : log.status === 'acknowledged' ? 'acknowledged' : 'active',
+            images: typeof log.images === 'string' ? log.images : Array.isArray(log.images) ? JSON.stringify(log.images) : null,
           }));
           
           console.log('[AdminDash] Mapped logs:', mappedLogs);
@@ -308,7 +320,16 @@ export default function AdminDashboard() {
               ...prev,
               name: `${userData.user.first_name || ''} ${userData.user.last_name || ''}`.trim() || 'Admin Supervisor',
               id: userData.user.id || '',
-              company: userData.user.company || prev.company || '',
+              company:
+                userData.user.company ||
+                userData.user.organization?.name ||
+                userData.user.organization?.organization ||
+                userData.user.organization?.organization_name ||
+                userData.user.organization?.company_name ||
+                userData.user.organization?.company ||
+                userData.user.invite_code ||
+                prev.company ||
+                '',
               phone: userData.user.phone || '',
               role: userData.user.role || 'admin',
             }));
@@ -443,6 +464,26 @@ export default function AdminDashboard() {
   const formatDate = (dateString: string) => {
     const date = new Date(dateString);
     return date.toLocaleDateString() + ' ' + date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+  };
+
+  const parseLogImages = (imagesValue?: string | null): string[] => {
+    if (!imagesValue) return [];
+
+    try {
+      const parsed = JSON.parse(imagesValue);
+      if (Array.isArray(parsed)) {
+        return parsed.map((img) => String(img)).filter(Boolean);
+      }
+      if (typeof parsed === 'string' && parsed.trim()) {
+        return [parsed];
+      }
+    } catch (_error) {
+      if (typeof imagesValue === 'string' && imagesValue.trim()) {
+        return [imagesValue];
+      }
+    }
+
+    return [];
   };
 
   // Handle guard selection
@@ -656,6 +697,22 @@ export default function AdminDashboard() {
             {log.guardName && (
               <Text style={styles.alertGuard}>Guard: {log.guardName}</Text>
             )}
+            {parseLogImages(log.images).length > 0 && (
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.logImagesScroll}>
+                {parseLogImages(log.images).map((imgUri, index) => (
+                  <TouchableOpacity
+                    key={`${log.id}-img-${index}`}
+                    style={styles.logImageTap}
+                    onPress={() => {
+                      setSelectedLogImage(imgUri);
+                      setLogImageModalVisible(true);
+                    }}
+                  >
+                    <Image source={{ uri: imgUri }} style={styles.logImageThumbnail} />
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+            )}
           </View>
         </TouchableOpacity>
       ))}
@@ -734,27 +791,6 @@ export default function AdminDashboard() {
           </View>
         </View>
       </View>
-
-      {/* Quick Actions */}
-      <Text style={styles.sectionTitle}>Quick Actions</Text>
-      <View style={styles.actionsGrid}>
-        <TouchableOpacity style={styles.actionButton}>
-          <Ionicons name="document-text" size={24} color="#fff" />
-          <Text style={styles.actionText}>Generate Report</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.actionButton}>
-          <Ionicons name="analytics" size={24} color="#fff" />
-          <Text style={styles.actionText}>View Analytics</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.actionButton}>
-          <Ionicons name="call" size={24} color="#fff" />
-          <Text style={styles.actionText}>Emergency Call</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.actionButton}>
-          <Ionicons name="shield-checkmark" size={24} color="#fff" />
-          <Text style={styles.actionText}>System Check</Text>
-        </TouchableOpacity>
-      </View>
     </ScrollView>
   );
 
@@ -764,21 +800,14 @@ export default function AdminDashboard() {
       {/* Account Settings */}
       <Text style={styles.sectionTitle}>Account Settings</Text>
       <View style={styles.card}>
-        <TouchableOpacity style={styles.settingRow}>
+        <TouchableOpacity style={styles.settingRow} onPress={() => setActiveTab('details')}>
           <View style={styles.settingLeft}>
             <Ionicons name="person" size={20} color="#2563eb" />
             <Text style={styles.settingText}>Profile Information</Text>
           </View>
           <Ionicons name="chevron-forward" size={20} color="#64748b" />
         </TouchableOpacity>
-        <TouchableOpacity style={styles.settingRow}>
-          <View style={styles.settingLeft}>
-            <Ionicons name="lock-closed" size={20} color="#2563eb" />
-            <Text style={styles.settingText}>Change Password</Text>
-          </View>
-          <Ionicons name="chevron-forward" size={20} color="#64748b" />
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.settingRow}>
+        <TouchableOpacity style={styles.settingRow} onPress={() => router.push('/settings')}>
           <View style={styles.settingLeft}>
             <Ionicons name="notifications" size={20} color="#2563eb" />
             <Text style={styles.settingText}>Notification Preferences</Text>
@@ -790,21 +819,14 @@ export default function AdminDashboard() {
       {/* System Settings */}
       <Text style={styles.sectionTitle}>System Settings</Text>
       <View style={styles.card}>
-        <TouchableOpacity style={styles.settingRow}>
-          <View style={styles.settingLeft}>
-            <Ionicons name="shield" size={20} color="#2563eb" />
-            <Text style={styles.settingText}>Security Settings</Text>
-          </View>
-          <Ionicons name="chevron-forward" size={20} color="#64748b" />
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.settingRow}>
+        <TouchableOpacity style={styles.settingRow} onPress={() => router.push('/locations')}>
           <View style={styles.settingLeft}>
             <Ionicons name="location" size={20} color="#2563eb" />
             <Text style={styles.settingText}>Location Management</Text>
           </View>
           <Ionicons name="chevron-forward" size={20} color="#64748b" />
         </TouchableOpacity>
-        <TouchableOpacity style={styles.settingRow}>
+        <TouchableOpacity style={styles.settingRow} onPress={() => router.push('/manage_guards')}>
           <View style={styles.settingLeft}>
             <Ionicons name="people" size={20} color="#2563eb" />
             <Text style={styles.settingText}>Guard Management</Text>
@@ -823,14 +845,7 @@ export default function AdminDashboard() {
           </View>
           <Ionicons name="toggle" size={20} color="#64748b" />
         </TouchableOpacity>
-        <TouchableOpacity style={styles.settingRow}>
-          <View style={styles.settingLeft}>
-            <Ionicons name="language" size={20} color="#2563eb" />
-            <Text style={styles.settingText}>Language</Text>
-          </View>
-          <Ionicons name="chevron-forward" size={20} color="#64748b" />
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.settingRow}>
+        <TouchableOpacity style={styles.settingRow} onPress={() => router.push('/about')}>
           <View style={styles.settingLeft}>
             <Ionicons name="information-circle" size={20} color="#2563eb" />
             <Text style={styles.settingText}>About</Text>
@@ -842,14 +857,14 @@ export default function AdminDashboard() {
       {/* Support */}
       <Text style={styles.sectionTitle}>Support</Text>
       <View style={styles.card}>
-        <TouchableOpacity style={styles.settingRow}>
+        <TouchableOpacity style={styles.settingRow} onPress={() => router.push('/support')}>
           <View style={styles.settingLeft}>
             <Ionicons name="help-circle" size={20} color="#2563eb" />
             <Text style={styles.settingText}>Help & Support</Text>
           </View>
           <Ionicons name="chevron-forward" size={20} color="#64748b" />
         </TouchableOpacity>
-        <TouchableOpacity style={styles.settingRow}>
+        <TouchableOpacity style={styles.settingRow} onPress={() => router.push('/support')}>
           <View style={styles.settingLeft}>
             <Ionicons name="chatbubble" size={20} color="#2563eb" />
             <Text style={styles.settingText}>Contact Support</Text>
@@ -1200,6 +1215,25 @@ export default function AdminDashboard() {
                       <Ionicons name="radio-button-on" size={18} color="#64748b" />
                       <Text style={styles.detailText}>Status: {selectedLog.status}</Text>
                     </View>
+                    {parseLogImages(selectedLog.images).length > 0 && (
+                      <View style={styles.logImagesContainer}>
+                        <Text style={styles.detailSectionTitle}>Images</Text>
+                        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.logImagesScroll}>
+                          {parseLogImages(selectedLog.images).map((imgUri, index) => (
+                            <TouchableOpacity
+                              key={`detail-img-${index}`}
+                              style={styles.logImageTap}
+                              onPress={() => {
+                                setSelectedLogImage(imgUri);
+                                setLogImageModalVisible(true);
+                              }}
+                            >
+                              <Image source={{ uri: imgUri }} style={styles.logImageThumbnail} />
+                            </TouchableOpacity>
+                          ))}
+                        </ScrollView>
+                      </View>
+                    )}
                   </View>
 
                   {selectedLog.guardName && (
@@ -1230,6 +1264,30 @@ export default function AdminDashboard() {
               </>
             )}
           </View>
+        </View>
+      </Modal>
+
+      {/* Log Image Viewer Modal */}
+      <Modal
+        visible={logImageModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setLogImageModalVisible(false)}
+      >
+        <View style={styles.imageViewerOverlay}>
+          <TouchableOpacity
+            style={styles.imageViewerCloseButton}
+            onPress={() => setLogImageModalVisible(false)}
+          >
+            <Ionicons name="close-circle" size={40} color="#fff" />
+          </TouchableOpacity>
+          {selectedLogImage && (
+            <Image
+              source={{ uri: selectedLogImage }}
+              style={styles.imageViewerImage}
+              resizeMode="contain"
+            />
+          )}
         </View>
       </Modal>
     </SafeAreaView>
@@ -1544,6 +1602,23 @@ const styles = StyleSheet.create({
   alertGuard: {
     color: '#64748b',
     fontSize: 12,
+  },
+  logImagesContainer: {
+    marginTop: 12,
+  },
+  logImagesScroll: {
+    marginTop: 8,
+  },
+  logImageTap: {
+    marginRight: 8,
+  },
+  logImageThumbnail: {
+    width: 72,
+    height: 72,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#334155',
+    backgroundColor: '#0f172a',
   },
   
   // Details Tab
@@ -1869,6 +1944,22 @@ const styles = StyleSheet.create({
   },
   resolveAction: {
     backgroundColor: '#22c55e',
+  },
+  imageViewerOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.95)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  imageViewerCloseButton: {
+    position: 'absolute',
+    top: 56,
+    right: 24,
+    zIndex: 10,
+  },
+  imageViewerImage: {
+    width: '95%',
+    height: '80%',
   },
   
   // Settings Tab
