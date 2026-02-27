@@ -7,13 +7,15 @@ function Header() {
   const [menuVisible, setMenuVisible] = useState(false);
   const router = useRouter();
 
-  const menuItems: { title: string; icon: string; screen: '/about' | '/settings' | '/support', }[] = [
+  const menuItems: { title: string; icon: string; screen: '/about' | '/settings' | '/support' | '/privacy_policy' | '/terms_of_service', }[] = [
     { title: 'About', icon: 'information-circle', screen: '/about' },
     { title: 'Settings', icon: 'settings', screen: '/settings' },
     { title: 'Help & Support', icon: 'help-circle', screen: '/support'},
+    { title: 'Privacy Policy', icon: 'document-text', screen: '/privacy_policy' },
+    { title: 'Terms of Service', icon: 'document', screen: '/terms_of_service' },
   ];
 
-  const navigateTo = (screen: '/about' | '/settings' | '/support') => {
+  const navigateTo = (screen: '/about' | '/settings' | '/support' | '/privacy_policy' | '/terms_of_service') => {
     setMenuVisible(false);
     router.push(screen as any);
   };
@@ -90,6 +92,8 @@ export default function RootLayout() {
       <Stack.Screen name="add_locations" />
       <Stack.Screen name="manage_guards" />
       <Stack.Screen name="new_assignment" />
+      <Stack.Screen name="privacy_policy" />
+      <Stack.Screen name="terms_of_service" />
     </Stack>
   );
 }
