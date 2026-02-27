@@ -1,6 +1,7 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import React, { useState, useEffect } from 'react';
+import { MapView, Marker, Polyline } from '../components/MapView';
 import {
   SafeAreaView,
   StyleSheet,
@@ -13,6 +14,7 @@ import {
   ActivityIndicator,
   Alert,
   Image,
+  Linking,
 } from 'react-native';
 import Constants from 'expo-constants';
 import { getUserSession, clearUserSession } from './services/auth.storage';
@@ -46,6 +48,7 @@ interface Patrol {
   endTime: string;
   duration: string;
   checkpoints: string[];
+  routeCoordinates: Array<{ latitude: number; longitude: number }>;
   status: 'completed' | 'in-progress' | 'missed';
   notes?: string;
 }
@@ -97,6 +100,8 @@ interface SessionUserData {
 export default function AdminDashboard() {
   const router = useRouter();
   const [activeTab, setActiveTab] = useState<'guards' | 'patrols' | 'details' | 'logs' | 'settings'>('guards');
+  const LOG_TIME_FILTER_OPTIONS = ['all', '1h', '24h', '7d', '30d'] as const;
+  type LogTimeFilter = typeof LOG_TIME_FILTER_OPTIONS[number];
 
   // Loading states
   const [isLoading, setIsLoading] = useState(true);
@@ -114,11 +119,16 @@ export default function AdminDashboard() {
   const [patrolFilterDate] = useState('');
   const [selectedPatrol, setSelectedPatrol] = useState<Patrol | null>(null);
   const [patrolModalVisible, setPatrolModalVisible] = useState(false);
+  const [routeModalVisible, setRouteModalVisible] = useState(false);
+  const [selectedRouteCoordinates, setSelectedRouteCoordinates] = useState<Array<{ latitude: number; longitude: number }>>([]);
+  const [nowTime, setNowTime] = useState(new Date());
 
   // Logs Tab State
   const [logs, setLogs] = useState<LogItem[]>([]);
   const [selectedLog, setSelectedLog] = useState<LogItem | null>(null);
   const [logModalVisible, setLogModalVisible] = useState(false);
+  const [logTimeFilter, setLogTimeFilter] = useState<LogTimeFilter>('all');
+  const [logTimeFilterModalVisible, setLogTimeFilterModalVisible] = useState(false);
   const [selectedLogImage, setSelectedLogImage] = useState<string | null>(null);
   const [logImageModalVisible, setLogImageModalVisible] = useState(false);
 
@@ -142,6 +152,61 @@ export default function AdminDashboard() {
     'Authorization': `Bearer ${token}`,
     'Content-Type': 'application/json',
   });
+
+  function parsePatrolCoordinates(mapValue: any): Array<{ latitude: number; longitude: number }> {
+    if (!mapValue) return [];
+
+    let parsed: any = mapValue;
+    if (typeof mapValue === 'string') {
+      try {
+        parsed = JSON.parse(mapValue);
+      } catch (_error) {
+        return [];
+      }
+    }
+
+    if (!Array.isArray(parsed)) {
+      if (parsed && Array.isArray(parsed.location_data)) {
+        parsed = parsed.location_data;
+      } else {
+        return [];
+      }
+    }
+
+    return parsed
+      .map((point: any) => {
+        const latitude = Number(point?.latitude ?? point?.lat);
+        const longitude = Number(point?.longitude ?? point?.lng ?? point?.lon);
+        if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return null;
+        return { latitude, longitude };
+      })
+      .filter((point): point is { latitude: number; longitude: number } => point !== null);
+  }
+
+  function getRegionFromCoordinates(coords: Array<{ latitude: number; longitude: number }>) {
+    if (!coords.length) {
+      return {
+        latitude: -1.286389,
+        longitude: 36.817223,
+        latitudeDelta: 0.05,
+        longitudeDelta: 0.05,
+      };
+    }
+
+    const latitudes = coords.map((c) => c.latitude);
+    const longitudes = coords.map((c) => c.longitude);
+    const minLat = Math.min(...latitudes);
+    const maxLat = Math.max(...latitudes);
+    const minLng = Math.min(...longitudes);
+    const maxLng = Math.max(...longitudes);
+
+    return {
+      latitude: (minLat + maxLat) / 2,
+      longitude: (minLng + maxLng) / 2,
+      latitudeDelta: Math.max((maxLat - minLat) * 1.4, 0.01),
+      longitudeDelta: Math.max((maxLng - minLng) * 1.4, 0.01),
+    };
+  }
 
   // Fetch data from APIs
   const fetchAllData = async (token: string) => {
@@ -219,7 +284,8 @@ export default function AdminDashboard() {
             location: patrol.location || 'Unknown Location',
             startTime: patrol.start_time || '',
             endTime: patrol.end_time || '',
-            duration: patrol.duration ? `${patrol.duration} mins` : 'N/A',
+            duration: formatDurationFromSeconds(patrol.duration),
+            routeCoordinates: parsePatrolCoordinates(patrol.map ?? patrol.location_data ?? null),
             checkpoints: Array.isArray(patrol.checkpoints)
               ? patrol.checkpoints.map((c: string) => String(c).trim()).filter(Boolean)
               : typeof patrol.checkpoints === 'string'
@@ -411,6 +477,14 @@ export default function AdminDashboard() {
     loadUserSession();
   }, []);
 
+  // Tick every second so "Late by" updates dynamically.
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setNowTime(new Date());
+    }, 1000);
+    return () => clearInterval(interval);
+  }, []);
+
   // Filter guards based on search
   const filteredGuards = guards.filter(guard =>
     guard.name.toLowerCase().includes(guardSearchQuery.toLowerCase()) ||
@@ -424,6 +498,25 @@ export default function AdminDashboard() {
     const matchesLocation = !patrolFilterLocation || patrol.location === patrolFilterLocation;
     const matchesDate = !patrolFilterDate || patrol.startTime.includes(patrolFilterDate);
     return matchesSearch && matchesLocation && matchesDate;
+  });
+
+  // Filter logs by selected time range
+  const filteredLogs = logs.filter((log) => {
+    if (logTimeFilter === 'all') return true;
+
+    const timestamp = new Date(log.timestamp).getTime();
+    if (!Number.isFinite(timestamp)) return false;
+
+    const now = Date.now();
+    const secondsByFilter: Record<Exclude<LogTimeFilter, 'all'>, number> = {
+      '1h': 60 * 60,
+      '24h': 24 * 60 * 60,
+      '7d': 7 * 24 * 60 * 60,
+      '30d': 30 * 24 * 60 * 60,
+    };
+
+    const cutoff = now - (secondsByFilter[logTimeFilter as Exclude<LogTimeFilter, 'all'>] * 1000);
+    return timestamp >= cutoff;
   });
 
   // Get status color
@@ -466,6 +559,98 @@ export default function AdminDashboard() {
     return date.toLocaleDateString() + ' ' + date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
   };
 
+  const getLogTimeFilterLabel = (filter: LogTimeFilter) => {
+    switch (filter) {
+      case '1h': return 'Last 1 hour';
+      case '24h': return 'Last 24 hours';
+      case '7d': return 'Last 7 days';
+      case '30d': return 'Last 30 days';
+      default: return 'All time';
+    }
+  };
+
+  const formatDurationFromSeconds = (secondsValue: any) => {
+    const totalSeconds = Number(secondsValue);
+    if (!Number.isFinite(totalSeconds) || totalSeconds < 0) {
+      return 'N/A';
+    }
+
+    const safeSeconds = Math.floor(totalSeconds);
+    const hours = Math.floor(safeSeconds / 3600);
+    const minutes = Math.floor((safeSeconds % 3600) / 60);
+    const seconds = safeSeconds % 60;
+
+    if (hours > 0) {
+      return `${hours}h ${minutes}m ${seconds}s`;
+    }
+    if (minutes > 0) {
+      return `${minutes}m ${seconds}s`;
+    }
+    return `${seconds}s`;
+  };
+
+  const parseShiftStartTimeToday = (timeValue: string): Date | null => {
+    if (!timeValue || typeof timeValue !== 'string') return null;
+    const parts = timeValue.trim().split(':');
+    if (parts.length < 2) return null;
+
+    const hours = Number(parts[0]);
+    const minutes = Number(parts[1]);
+    const seconds = parts.length > 2 ? Number(parts[2]) : 0;
+
+    if (
+      !Number.isFinite(hours) || !Number.isFinite(minutes) || !Number.isFinite(seconds) ||
+      hours < 0 || hours > 23 || minutes < 0 || minutes > 59 || seconds < 0 || seconds > 59
+    ) {
+      return null;
+    }
+
+    const date = new Date(nowTime);
+    date.setHours(hours, minutes, seconds, 0);
+    return date;
+  };
+
+  const getGuardLateBy = (guard: Guard): string | null => {
+    if (guard.status === 'active') return null;
+    const shiftStart = parseShiftStartTimeToday(guard.operatingHours.start);
+    if (!shiftStart) return null;
+
+    if (nowTime.getTime() <= shiftStart.getTime()) {
+      return null;
+    }
+
+    const lateSeconds = Math.floor((nowTime.getTime() - shiftStart.getTime()) / 1000);
+    return `Late by: ${formatDurationFromSeconds(lateSeconds)}`;
+  };
+
+  const handleCallGuard = async (phone?: string) => {
+    if (!phone || !phone.trim()) {
+      Alert.alert('No Phone Number', 'This guard does not have a phone number.');
+      return;
+    }
+    const url = `tel:${phone}`;
+    const supported = await Linking.canOpenURL(url);
+    if (!supported) {
+      Alert.alert('Unavailable', 'Calling is not available on this device.');
+      return;
+    }
+    await Linking.openURL(url);
+  };
+
+  const handleMessageGuard = async (phone?: string) => {
+    if (!phone || !phone.trim()) {
+      Alert.alert('No Phone Number', 'This guard does not have a phone number.');
+      return;
+    }
+    const url = `sms:${phone}`;
+    const supported = await Linking.canOpenURL(url);
+    if (!supported) {
+      Alert.alert('Unavailable', 'SMS is not available on this device.');
+      return;
+    }
+    await Linking.openURL(url);
+  };
+
   const parseLogImages = (imagesValue?: string | null): string[] => {
     if (!imagesValue) return [];
 
@@ -496,6 +681,15 @@ export default function AdminDashboard() {
   const handlePatrolPress = (patrol: Patrol) => {
     setSelectedPatrol(patrol);
     setPatrolModalVisible(true);
+  };
+
+  const handleViewRoute = (patrol: Patrol) => {
+    if (!patrol.routeCoordinates || patrol.routeCoordinates.length === 0) {
+      Alert.alert('No Route Data', 'No recorded coordinates were found for this patrol.');
+      return;
+    }
+    setSelectedRouteCoordinates(patrol.routeCoordinates);
+    setRouteModalVisible(true);
   };
 
   // Handle log selection
@@ -540,33 +734,38 @@ export default function AdminDashboard() {
 
       {/* Guards List */}
       <Text style={styles.sectionTitle}>Guards</Text>
-      {filteredGuards.map((guard) => (
-        <TouchableOpacity
-          key={guard.id}
-          style={styles.guardCard}
-          onPress={() => handleGuardPress(guard)}
-        >
-          <View style={styles.guardHeader}>
-            <View style={styles.guardAvatar}>
-              <Text style={styles.guardAvatarText}>
-                {guard.name.split(' ').map(n => n[0]).join('')}
-              </Text>
+      {filteredGuards.map((guard) => {
+        const lateByText = getGuardLateBy(guard);
+
+        return (
+          <TouchableOpacity
+            key={guard.id}
+            style={styles.guardCard}
+            onPress={() => handleGuardPress(guard)}
+          >
+            <View style={styles.guardHeader}>
+              <View style={styles.guardAvatar}>
+                <Text style={styles.guardAvatarText}>
+                  {guard.name.split(' ').map(n => n[0]).join('')}
+                </Text>
+              </View>
+              <View style={styles.guardInfo}>
+                <Text style={styles.guardName}>{guard.name}</Text>
+                <Text style={styles.guardLocation}>{guard.location}</Text>
+              </View>
+              <View style={styles.guardStatus}>
+                <View style={[styles.statusIndicator, { backgroundColor: getStatusColor(guard.status) }]} />
+                <Text style={styles.statusText}>{guard.status.replace('-', ' ')}</Text>
+              </View>
             </View>
-            <View style={styles.guardInfo}>
-              <Text style={styles.guardName}>{guard.name}</Text>
-              <Text style={styles.guardLocation}>{guard.location}</Text>
+            <View style={styles.guardDetails}>
+              <Text style={styles.guardLastSeen}>Last seen: {guard.lastSeen}</Text>
+              {lateByText && <Text style={styles.guardLateText}>{lateByText}</Text>}
+              <Text style={styles.guardAreas}>Areas: {guard.assignedAreas.join(', ')}</Text>
             </View>
-            <View style={styles.guardStatus}>
-              <View style={[styles.statusIndicator, { backgroundColor: getStatusColor(guard.status) }]} />
-              <Text style={styles.statusText}>{guard.status.replace('-', ' ')}</Text>
-            </View>
-          </View>
-          <View style={styles.guardDetails}>
-            <Text style={styles.guardLastSeen}>Last seen: {guard.lastSeen}</Text>
-            <Text style={styles.guardAreas}>Areas: {guard.assignedAreas.join(', ')}</Text>
-          </View>
-        </TouchableOpacity>
-      ))}
+          </TouchableOpacity>
+        );
+      })}
     </ScrollView>
   );
 
@@ -644,9 +843,9 @@ export default function AdminDashboard() {
           <Text style={styles.filterText}>Type</Text>
           <Ionicons name="chevron-down" size={16} color="#64748b" />
         </TouchableOpacity>
-        <TouchableOpacity style={styles.filterButton}>
-          <Ionicons name="flag" size={16} color="#64748b" />
-          <Text style={styles.filterText}>Priority</Text>
+        <TouchableOpacity style={styles.filterButton} onPress={() => setLogTimeFilterModalVisible(true)}>
+          <Ionicons name="time" size={16} color="#64748b" />
+          <Text style={styles.filterText}>{getLogTimeFilterLabel(logTimeFilter)}</Text>
           <Ionicons name="chevron-down" size={16} color="#64748b" />
         </TouchableOpacity>
       </View>
@@ -655,24 +854,24 @@ export default function AdminDashboard() {
       <View style={styles.statsContainer}>
         <View style={styles.statCard}>
           <Ionicons name="alert-circle" size={24} color="#ef4444" />
-          <Text style={styles.statNumber}>{logs.filter(l => l.status === 'active').length}</Text>
+          <Text style={styles.statNumber}>{filteredLogs.filter(l => l.status === 'active').length}</Text>
           <Text style={styles.statLabel}>Active Logs</Text>
         </View>
         <View style={styles.statCard}>
           <Ionicons name="checkmark-circle" size={24} color="#f59e0b" />
-          <Text style={styles.statNumber}>{logs.filter(l => l.priority === 'high').length}</Text>
+          <Text style={styles.statNumber}>{filteredLogs.filter(l => l.priority === 'high').length}</Text>
           <Text style={styles.statLabel}>High Priority</Text>
         </View>
         <View style={styles.statCard}>
           <Ionicons name="time" size={24} color="#22c55e" />
-          <Text style={styles.statNumber}>{logs.filter(l => l.status === 'resolved').length}</Text>
+          <Text style={styles.statNumber}>{filteredLogs.filter(l => l.status === 'resolved').length}</Text>
           <Text style={styles.statLabel}>Resolved</Text>
         </View>
       </View>
 
       {/* Logs List */}
       <Text style={styles.sectionTitle}>Recent Logs</Text>
-      {logs.map((log) => (
+      {filteredLogs.map((log) => (
         <TouchableOpacity
           key={log.id}
           style={styles.alertCard}
@@ -1063,17 +1262,19 @@ export default function AdminDashboard() {
                 </ScrollView>
 
                 <View style={styles.modalActions}>
-                  <TouchableOpacity style={styles.modalActionButton}>
+                  <TouchableOpacity
+                    style={styles.modalActionButton}
+                    onPress={() => handleCallGuard(selectedGuard.phone)}
+                  >
                     <Ionicons name="call" size={20} color="#fff" />
                     <Text style={styles.modalActionText}>Call</Text>
                   </TouchableOpacity>
-                  <TouchableOpacity style={styles.modalActionButton}>
+                  <TouchableOpacity
+                    style={styles.modalActionButton}
+                    onPress={() => handleMessageGuard(selectedGuard.phone)}
+                  >
                     <Ionicons name="chatbubble" size={20} color="#fff" />
                     <Text style={styles.modalActionText}>Message</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity style={[styles.modalActionButton, styles.editAction]}>
-                    <Ionicons name="create" size={20} color="#fff" />
-                    <Text style={styles.modalActionText}>Edit</Text>
                   </TouchableOpacity>
                 </View>
               </>
@@ -1154,7 +1355,7 @@ export default function AdminDashboard() {
                 </ScrollView>
 
                 <View style={styles.modalActions}>
-                  <TouchableOpacity style={styles.modalActionButton}>
+                  <TouchableOpacity style={styles.modalActionButton} onPress={() => handleViewRoute(selectedPatrol)}>
                     <Ionicons name="map" size={20} color="#fff" />
                     <Text style={styles.modalActionText}>View Route</Text>
                   </TouchableOpacity>
@@ -1165,6 +1366,57 @@ export default function AdminDashboard() {
                 </View>
               </>
             )}
+          </View>
+        </View>
+      </Modal>
+
+      {/* Patrol Route Modal */}
+      <Modal
+        visible={routeModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setRouteModalVisible(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalContent, styles.routeModalContent]}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Patrol Route</Text>
+              <TouchableOpacity onPress={() => setRouteModalVisible(false)}>
+                <Ionicons name="close" size={24} color="#fff" />
+              </TouchableOpacity>
+            </View>
+
+            <View style={styles.routeMapContainer}>
+              <MapView
+                style={styles.routeMap}
+                initialRegion={getRegionFromCoordinates(selectedRouteCoordinates)}
+                region={getRegionFromCoordinates(selectedRouteCoordinates)}
+              >
+                {selectedRouteCoordinates.length > 0 && (
+                  <>
+                    <Marker coordinate={selectedRouteCoordinates[0]} title="Start" />
+                    <Marker
+                      coordinate={selectedRouteCoordinates[selectedRouteCoordinates.length - 1]}
+                      title="End"
+                    />
+                  </>
+                )}
+                {selectedRouteCoordinates.length > 1 && (
+                  <Polyline
+                    coordinates={selectedRouteCoordinates}
+                    strokeColor="#2563eb"
+                    strokeWidth={4}
+                  />
+                )}
+              </MapView>
+            </View>
+
+            <View style={styles.modalActions}>
+              <TouchableOpacity style={styles.modalActionButton} onPress={() => setRouteModalVisible(false)}>
+                <Ionicons name="checkmark" size={20} color="#fff" />
+                <Text style={styles.modalActionText}>Done</Text>
+              </TouchableOpacity>
+            </View>
           </View>
         </View>
       </Modal>
@@ -1290,6 +1542,51 @@ export default function AdminDashboard() {
           )}
         </View>
       </Modal>
+
+      {/* Logs Time Filter Modal */}
+      <Modal
+        visible={logTimeFilterModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setLogTimeFilterModalVisible(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Filter Logs By Time</Text>
+              <TouchableOpacity onPress={() => setLogTimeFilterModalVisible(false)}>
+                <Ionicons name="close" size={24} color="#fff" />
+              </TouchableOpacity>
+            </View>
+
+            <View style={{ padding: 16 }}>
+              {LOG_TIME_FILTER_OPTIONS.map((option) => (
+                <TouchableOpacity
+                  key={option}
+                  style={[
+                    styles.filterOption,
+                    logTimeFilter === option && styles.filterOptionActive,
+                  ]}
+                  onPress={() => {
+                    setLogTimeFilter(option);
+                    setLogTimeFilterModalVisible(false);
+                  }}
+                >
+                  <Text style={[
+                    styles.filterOptionText,
+                    logTimeFilter === option && styles.filterOptionTextActive,
+                  ]}>
+                    {getLogTimeFilterLabel(option)}
+                  </Text>
+                  {logTimeFilter === option && (
+                    <Ionicons name="checkmark" size={18} color="#fff" />
+                  )}
+                </TouchableOpacity>
+              ))}
+            </View>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -1378,6 +1675,31 @@ const styles = StyleSheet.create({
   filterText: {
     color: '#94a3b8',
     fontSize: 14,
+  },
+  filterOption: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#1e293b',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#334155',
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    marginBottom: 8,
+  },
+  filterOptionActive: {
+    backgroundColor: '#2563eb',
+    borderColor: '#2563eb',
+  },
+  filterOptionText: {
+    color: '#cbd5e1',
+    fontSize: 15,
+    fontWeight: '500',
+  },
+  filterOptionTextActive: {
+    color: '#fff',
+    fontWeight: '700',
   },
   
   // Stats
@@ -1470,6 +1792,12 @@ const styles = StyleSheet.create({
     color: '#94a3b8',
     fontSize: 12,
     marginBottom: 4,
+  },
+  guardLateText: {
+    color: '#f59e0b',
+    fontSize: 12,
+    marginBottom: 4,
+    fontWeight: '600',
   },
   guardAreas: {
     color: '#64748b',
@@ -1761,6 +2089,10 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#1e293b',
   },
+  routeModalContent: {
+    width: '94%',
+    maxHeight: '85%',
+  },
   modalHeader: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1802,6 +2134,17 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 14,
     fontWeight: '600',
+  },
+  routeMapContainer: {
+    paddingHorizontal: 16,
+    paddingBottom: 12,
+  },
+  routeMap: {
+    width: '100%',
+    height: 360,
+    borderRadius: 12,
+    overflow: 'hidden',
+    backgroundColor: '#0f172a',
   },
   
   // Guard Detail Modal

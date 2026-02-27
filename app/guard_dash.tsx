@@ -14,6 +14,7 @@ import {
   Modal,
   ActivityIndicator,
   Image,
+  AppState,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Location from 'expo-location';
@@ -113,6 +114,7 @@ const TIME_SLOTS = [
 export default function GuardDashboard() {
 const router = useRouter();
 const [activeTab, setActiveTab] = useState<'patrol' | 'logs' | 'details' | 'settings'>('patrol');
+  const appStateRef = useRef(AppState.currentState);
 
   // State for locations and available areas
   const [locations, setLocations] = useState<LocationData[]>([]);
@@ -153,6 +155,14 @@ const [activeTab, setActiveTab] = useState<'patrol' | 'logs' | 'details' | 'sett
   const [locationData, setLocationData] = useState<Array<{latitude: number, longitude: number, timestamp: number}>>([]);
   const [currentLocation, setCurrentLocation] = useState<{latitude: number, longitude: number} | null>(null);
   const locationSubscription = useRef<Location.LocationSubscription | null>(null);
+
+  const getElapsedSeconds = (startedAt: Date | null) => {
+    if (!startedAt) return 0;
+    const startMs = startedAt.getTime();
+    if (Number.isNaN(startMs)) return 0;
+    const elapsedMs = Date.now() - startMs;
+    return Math.max(0, Math.floor(elapsedMs / 1000));
+  };
   
   // Guard Profile State - initialize with empty values
   const [guardProfile, setGuardProfile] = useState<GuardProfile>({
@@ -412,10 +422,11 @@ const [activeTab, setActiveTab] = useState<'patrol' | 'logs' | 'details' | 'sett
       const patrolData = await AsyncStorage.getItem('ongoingPatrol');
       if (patrolData) {
         const parsed = JSON.parse(patrolData);
+        const parsedStartTime = parsed.startTime ? new Date(parsed.startTime) : null;
         setIsRecording(true);
-        setRecordingTime(parsed.recordingTime || 0);
         setPatrolId(parsed.patrolId);
-        setStartTime(new Date(parsed.startTime));
+        setStartTime(parsedStartTime);
+        setRecordingTime(getElapsedSeconds(parsedStartTime));
         setLocationData(parsed.locationData || []);
         setRecordingStatus('Patrol resumed from previous session');
 
@@ -753,15 +764,30 @@ const [activeTab, setActiveTab] = useState<'patrol' | 'logs' | 'details' | 'sett
   // Recording timer effect
   useEffect(() => {
     let interval: ReturnType<typeof setInterval>;
-    if (isRecording) {
+    if (isRecording && startTime) {
       interval = setInterval(() => {
-        setRecordingTime((prev) => prev + 1);
+        setRecordingTime(getElapsedSeconds(startTime));
       }, 1000);
     }
     return () => {
       if (interval) clearInterval(interval);
     };
-  }, [isRecording]);
+  }, [isRecording, startTime]);
+
+  // Keep timer accurate across app background/foreground transitions
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', (nextAppState) => {
+      const wasInBackground = appStateRef.current.match(/inactive|background/);
+      if (wasInBackground && nextAppState === 'active' && isRecording && startTime) {
+        setRecordingTime(getElapsedSeconds(startTime));
+      }
+      appStateRef.current = nextAppState;
+    });
+
+    return () => {
+      subscription.remove();
+    };
+  }, [isRecording, startTime]);
 
   // Cleanup location tracking on unmount
   useEffect(() => {
@@ -781,10 +807,11 @@ const [activeTab, setActiveTab] = useState<'patrol' | 'logs' | 'details' | 'sett
   // Handle patrol recording
   const toggleRecording = async () => {
     if (isRecording) {
+      const currentDuration = getElapsedSeconds(startTime);
       // Stop recording
       Alert.alert(
         'End Patrol',
-        `Patrol duration: ${formatTime(recordingTime)}\nRecorded checkpoints will be submitted.`,
+        `Patrol duration: ${formatTime(currentDuration)}\nRecorded checkpoints will be submitted.`,
         [
           { text: 'Cancel', style: 'cancel' },
           {
@@ -794,6 +821,7 @@ const [activeTab, setActiveTab] = useState<'patrol' | 'logs' | 'details' | 'sett
               try {
                 // Stop location tracking
                 stopLocationTracking();
+                const finalDuration = getElapsedSeconds(startTime);
 
                 // Update patrol record in Directus
                 if (patrolId) {
@@ -818,7 +846,7 @@ const [activeTab, setActiveTab] = useState<'patrol' | 'logs' | 'details' | 'sett
                     body: JSON.stringify({
                       organization_id: userData?.invite_code || null,
                       user_id: userData?.id || null,
-                      duration: recordingTime,
+                      duration: finalDuration,
                       start_time: startTime?.toISOString() || null,
                       end_time: endTime,
                       map: mapJson,
@@ -890,14 +918,14 @@ const [activeTab, setActiveTab] = useState<'patrol' | 'logs' | 'details' | 'sett
         if (response.ok) {
           const data = await response.json();
           const newPatrolId = data.data?.id || data.id;
+          const startDate = new Date(now);
           setPatrolId(newPatrolId);
-          setStartTime(new Date(now));
+          setStartTime(startDate);
 
           // Persist patrol data to AsyncStorage
           await AsyncStorage.setItem('ongoingPatrol', JSON.stringify({
             patrolId: newPatrolId,
             startTime: now,
-            recordingTime: 0,
             locationData: [],
           }));
         }
